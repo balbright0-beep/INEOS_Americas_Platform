@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct
 from typing import Optional
 from app.database import get_db
-from app.models import Vehicle, RetailSale, DealerPerformance, RegionalSales
+from app.models import Vehicle, RetailSale, DealerPerformance, RegionalSales, MonthlySnapshot
 from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/data", tags=["data"])
@@ -119,8 +119,8 @@ def list_retail_sales(dealer: Optional[str] = None, user=Depends(get_current_use
             market_dealers = [d.dealer for d in db.query(DealerPerformance).filter(DealerPerformance.market == my_perf.market).all()]
             q = q.filter(RetailSale.dealer.in_(market_dealers))
         else:
-            # Fallback: just show all retail sales (dealer might not be in performance table)
-            pass
+            # Security fix: only show this dealer's sales if not in performance table
+            q = _dfq(q, RetailSale.dealer, df)
     elif dealer:
         q = _dfq(q, RetailSale.dealer, dealer)
     rows = q.order_by(RetailSale.dealer, RetailSale.handover_date.desc()).all()
@@ -241,7 +241,6 @@ def dealer_scorecard(user=Depends(get_current_user), db: Session = Depends(get_d
 @router.get("/trends")
 def dealer_trends(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Historical monthly trends for the dealer."""
-    from app.models import MonthlySnapshot
     df = _dealer_filter(user)
     q = db.query(MonthlySnapshot)
     if df:
