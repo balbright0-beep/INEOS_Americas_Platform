@@ -131,14 +131,38 @@ async def upload_master(file: UploadFile = File(...), admin=Depends(require_admi
 
     # Save monthly snapshot for historical trends
     month = datetime.utcnow().strftime("%Y-%m")
+    month_start = f"{month}-01"
+    month_end = f"{month}-31"
     for dp in db.query(DealerPerformance).all():
-        sales = db.query(RetailSale).filter(RetailSale.dealer.ilike(f"%{dp.dealer}%")).count()
+        # CRITICAL FIX: Filter retail sales to current month only
+        sales = db.query(RetailSale).filter(
+            RetailSale.dealer.ilike(f"%{dp.dealer}%"),
+            RetailSale.handover_date >= month_start,
+            RetailSale.handover_date <= month_end,
+        ).count()
         og = db.query(Vehicle).filter(Vehicle.dealer.ilike(f"%{dp.dealer}%"), Vehicle.status == "Dealer Stock").count()
+        # Calculate avg days to sell for this month
+        avg_dts_rows = db.query(RetailSale.days_to_sell).filter(
+            RetailSale.dealer.ilike(f"%{dp.dealer}%"),
+            RetailSale.handover_date >= month_start,
+            RetailSale.handover_date <= month_end,
+            RetailSale.days_to_sell > 0,
+        ).all()
+        avg_dts = round(sum(r[0] for r in avg_dts_rows) / len(avg_dts_rows)) if avg_dts_rows else 0
         existing = db.query(MonthlySnapshot).filter(MonthlySnapshot.month == month, MonthlySnapshot.dealer == dp.dealer).first()
-        if not existing:
+        if existing:
+            # Update existing snapshot with latest data
+            existing.sales = sales
+            existing.handovers = dp.handovers
+            existing.on_ground = og
+            existing.leads = dp.leads
+            existing.test_drives = dp.test_drives
+            existing.won = dp.won
+            existing.avg_days_to_sell = avg_dts
+        else:
             db.add(MonthlySnapshot(month=month, dealer=dp.dealer, market=dp.market, sales=sales,
                                    handovers=dp.handovers, on_ground=og, leads=dp.leads,
-                                   test_drives=dp.test_drives, won=dp.won))
+                                   test_drives=dp.test_drives, won=dp.won, avg_days_to_sell=avg_dts))
 
     # Store timestamp
     state = db.query(AppState).filter(AppState.key == "last_master_upload").first()
