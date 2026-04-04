@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>INEOS Americas Platform</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -37,6 +39,60 @@ const FLEET_URL='https://ineos-fleet-app.onrender.com';
 
 /* ===== PRIORITY BADGES ===== */
 const PRI={info:'bg-blue-100 text-blue-700',important:'bg-amber-100 text-amber-700',urgent:'bg-red-100 text-red-700'};
+const GRADE_COLORS={A:'text-green-600 bg-green-50',B:'text-blue-600 bg-blue-50',C:'text-amber-600 bg-amber-50',D:'text-orange-600 bg-orange-50',F:'text-red-600 bg-red-50'};
+
+/* ===== TOAST SYSTEM ===== */
+let _toastFn=null;
+function Toast(){const[msg,setMsg]=useState(null);_toastFn=(text,type='success')=>{setMsg({text,type});setTimeout(()=>setMsg(null),3000)};
+  if(!msg)return null;
+  const bg=msg.type==='error'?'bg-red-600':msg.type==='warning'?'bg-amber-600':'bg-green-600';
+  return <div className={`fixed bottom-6 right-6 ${bg} text-white px-5 py-3 rounded-lg shadow-lg z-[9999] text-sm font-medium`} style={{animation:'ids-fadeInUp 0.3s ease'}}>{msg.text}</div>;
+}
+function toast(text,type){if(_toastFn)_toastFn(text,type)}
+
+/* ===== SKELETON LOADING ===== */
+function Skeleton({className}){return <div className={`ids-skeleton ${className||''}`} style={{minHeight:'20px'}}/>}
+function SkeletonKPI(){return <div className="ids-skeleton" style={{height:'90px',borderRadius:'6px'}}/>}
+function SkeletonTable(){return <div className="ids-skeleton" style={{height:'200px',borderRadius:'6px'}}/>}
+
+/* ===== ERROR BOUNDARY ===== */
+class ErrorBoundary extends React.Component{
+  constructor(p){super(p);this.state={hasError:false,error:null}}
+  static getDerivedStateFromError(e){return{hasError:true,error:e}}
+  render(){if(this.state.hasError)return <div className="p-8 text-center"><div className="text-red-500 text-lg font-semibold mb-2">Something went wrong</div><p className="text-sm text-gray-500">{this.state.error?.message}</p><button onClick={()=>this.setState({hasError:false})} className="mt-4 px-4 py-2 bg-ineos-red text-white rounded text-sm">Try Again</button></div>;return this.props.children}
+}
+
+/* ===== SESSION TIMEOUT ===== */
+function useSessionTimeout(mins=720){
+  useEffect(()=>{
+    const start=Date.now();
+    const check=setInterval(()=>{if(Date.now()-start>mins*60*1000){toast('Session expired','warning');setTimeout(()=>API.logout(),2000)}},60000);
+    return()=>clearInterval(check);
+  },[]);
+}
+
+/* ===== COMMAND PALETTE ===== */
+function CommandPalette({open,onClose,items,onSelect}){
+  const[q,setQ]=useState('');
+  const filtered=items.filter(i=>i.label.toLowerCase().includes(q.toLowerCase()));
+  useEffect(()=>{const h=e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();onSelect?.('toggle')}if(e.key==='Escape')onClose()};document.addEventListener('keydown',h);return()=>document.removeEventListener('keydown',h)},[]);
+  if(!open)return null;
+  return <div className="ids-cmd-overlay" onClick={onClose}><div className="ids-cmd-box" onClick={e=>e.stopPropagation()}>
+    <input className="ids-cmd-input" placeholder="Search pages, actions..." value={q} onChange={e=>setQ(e.target.value)} autoFocus/>
+    <div className="ids-cmd-results">{filtered.map((item,i)=><div key={i} className="ids-cmd-item" onClick={()=>{onSelect(item.action);onClose();setQ('')}}><span>{item.label}</span><span className="ids-cmd-item-group">{item.group}</span></div>)}</div>
+  </div></div>;
+}
+
+/* ===== MINI CHART COMPONENT ===== */
+function MiniChart({type,data,labels,color,height}){
+  const ref=React.useRef(null);const chartRef=React.useRef(null);
+  useEffect(()=>{if(!ref.current||!data?.length)return;if(chartRef.current)chartRef.current.destroy();
+    chartRef.current=new Chart(ref.current,{type:type||'line',data:{labels:labels||data.map((_,i)=>i),datasets:[{data,borderColor:color||'#FF4639',backgroundColor:(color||'#FF4639')+'20',fill:type==='line',borderWidth:2,pointRadius:0,tension:0.3}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{display:false}}}});
+    return()=>{if(chartRef.current)chartRef.current.destroy()};
+  },[data]);
+  return <canvas ref={ref} style={{height:height||'60px',width:'100%'}}/>;
+}
 
 /* ===== LOGIN PAGE ===== */
 function LoginPage({onLogin}){
@@ -435,9 +491,10 @@ function DealerQuickLinks({links}){
 function App(){
   const stored=sessionStorage.getItem('pu');
   const[user,setUser]=useState(stored?JSON.parse(stored):null);
-  if(!user||!API.token)return <LoginPage onLogin={setUser}/>;
-  if(user.role==='dealer')return <DealerHub user={user}/>;
-  return <InternalHub user={user}/>;
+  useSessionTimeout(720); // 12 hours
+  if(!user||!API.token)return <><LoginPage onLogin={setUser}/><Toast/></>;
+  const content=user.role==='dealer'?<DealerHub user={user}/>:<InternalHub user={user}/>;
+  return <ErrorBoundary>{content}<Toast/></ErrorBoundary>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);

@@ -200,6 +200,80 @@ def dealer_inventory(user=Depends(get_current_user), db: Session = Depends(get_d
     }
 
 
+@router.get("/scorecard")
+def dealer_scorecard(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Dealer scorecard with grades compared to network averages."""
+    df = _dealer_filter(user)
+    perf = db.query(DealerPerformance).filter(DealerPerformance.dealer.ilike(f"%{df}%")).first() if df else None
+    if not perf:
+        return {"dealer": df, "grades": {}, "network_avg": {}}
+
+    # Network averages
+    all_perf = db.query(DealerPerformance).all()
+    n = len(all_perf) or 1
+    net_ho = sum(p.handovers for p in all_perf) / n
+    net_leads = sum(p.leads for p in all_perf) / n
+    net_td = sum(p.test_drives for p in all_perf) / n
+    net_won = sum(p.won for p in all_perf) / n
+    net_og = sum(p.on_ground for p in all_perf) / n
+
+    def grade(val, avg):
+        if avg == 0: return "B"
+        ratio = val / avg
+        if ratio >= 1.2: return "A"
+        if ratio >= 0.9: return "B"
+        if ratio >= 0.7: return "C"
+        if ratio >= 0.5: return "D"
+        return "F"
+
+    return {
+        "dealer": perf.dealer, "market": perf.market,
+        "metrics": {
+            "handovers": {"value": perf.handovers, "network_avg": round(net_ho, 1), "grade": grade(perf.handovers, net_ho)},
+            "leads": {"value": perf.leads, "network_avg": round(net_leads, 1), "grade": grade(perf.leads, net_leads)},
+            "test_drives": {"value": perf.test_drives, "network_avg": round(net_td, 1), "grade": grade(perf.test_drives, net_td)},
+            "won": {"value": perf.won, "network_avg": round(net_won, 1), "grade": grade(perf.won, net_won)},
+            "on_ground": {"value": perf.on_ground, "network_avg": round(net_og, 1), "grade": grade(perf.on_ground, net_og)},
+        },
+    }
+
+
+@router.get("/trends")
+def dealer_trends(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Historical monthly trends for the dealer."""
+    from app.models import MonthlySnapshot
+    df = _dealer_filter(user)
+    q = db.query(MonthlySnapshot)
+    if df:
+        q = q.filter(MonthlySnapshot.dealer.ilike(f"%{df}%"))
+    rows = q.order_by(MonthlySnapshot.month).all()
+    return [{"month": r.month, "dealer": r.dealer, "sales": r.sales, "handovers": r.handovers, "on_ground": r.on_ground, "leads": r.leads, "test_drives": r.test_drives, "won": r.won} for r in rows]
+
+
+@router.get("/leaderboard")
+def regional_leaderboard(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Regional ranking showing position without exact numbers for other dealers."""
+    df = _dealer_filter(user)
+    if not df:
+        return {"rank": 0, "total": 0, "market": ""}
+
+    perf = db.query(DealerPerformance).filter(DealerPerformance.dealer.ilike(f"%{df}%")).first()
+    if not perf:
+        return {"rank": 0, "total": 0, "market": ""}
+
+    market_dealers = db.query(DealerPerformance).filter(DealerPerformance.market == perf.market).order_by(DealerPerformance.handovers.desc()).all()
+    rank = next((i + 1 for i, d in enumerate(market_dealers) if d.dealer == perf.dealer), 0)
+
+    return {
+        "rank": rank,
+        "total": len(market_dealers),
+        "market": perf.market,
+        "your_handovers": perf.handovers,
+        "market_leader_handovers": market_dealers[0].handovers if market_dealers else 0,
+        "market_avg_handovers": round(sum(d.handovers for d in market_dealers) / len(market_dealers)) if market_dealers else 0,
+    }
+
+
 def _veh(v):
     return {
         "id": v.id, "vin": v.vin, "dealer": v.dealer, "market": v.market,

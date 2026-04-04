@@ -40,6 +40,10 @@ def login(data: dict, db: Session = Depends(get_db)):
     if not user or not bcrypt.checkpw(data.get("password", "").encode("utf-8")[:72], user.password_hash.encode("utf-8")):
         raise HTTPException(401, "Invalid credentials")
     token = create_token({"sub": user.username, "role": user.role})
+    # Audit login
+    from app.models import AuditLog
+    db.add(AuditLog(action="login", user=user.username, detail=f"Role: {user.role}"))
+    db.commit()
     return {"token": token, "username": user.username, "role": user.role, "dealer_name": user.dealer_name}
 
 

@@ -127,3 +127,42 @@ class RegionalSales(Base):
     objective = Column(Integer, default=0)
     pct_objective = Column(String)
     cvp = Column(Integer, default=0)
+
+
+# ===== AUDIT & HISTORY =====
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True)
+    action = Column(String, nullable=False)  # login, upload, create_user, delete_user, create_bulletin, etc.
+    user = Column(String)
+    detail = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class UploadHistory(Base):
+    __tablename__ = "upload_history"
+    id = Column(Integer, primary_key=True)
+    filename = Column(String)
+    uploaded_by = Column(String)
+    vehicles_count = Column(Integer, default=0)
+    retail_sales_count = Column(Integer, default=0)
+    performance_count = Column(Integer, default=0)
+    status = Column(String, default="success")
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class MonthlySnapshot(Base):
+    __tablename__ = "monthly_snapshots"
+    id = Column(Integer, primary_key=True)
+    month = Column(String, index=True)  # YYYY-MM format
+    dealer = Column(String, index=True)
+    market = Column(String)
+    sales = Column(Integer, default=0)
+    handovers = Column(Integer, default=0)
+    on_ground = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    test_drives = Column(Integer, default=0)
+    won = Column(Integer, default=0)
+    avg_days_to_sell = Column(Integer, default=0)
+    created_at = Column(DateTime, server_default=func.now())

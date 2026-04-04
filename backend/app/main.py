@@ -1,8 +1,10 @@
 import os
+import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from collections import defaultdict
 
 from app.config import *  # noqa
 from app.database import engine, Base, SessionLocal
@@ -24,6 +26,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="INEOS Americas Platform", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Simple rate limiting (100 requests per minute per IP)
+_rate_limit = defaultdict(list)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        ip = request.client.host
+        now = time.time()
+        _rate_limit[ip] = [t for t in _rate_limit[ip] if now - t < 60]
+        if len(_rate_limit[ip]) > 100:
+            return Response("Rate limit exceeded", status_code=429)
+        _rate_limit[ip].append(now)
+    response = await call_next(request)
+    # Disable caching on HTML to prevent stale pages
+    if request.url.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 app.include_router(auth.router)
 app.include_router(admin.router)
