@@ -9,6 +9,45 @@ from app.routers.auth import get_current_user
 router = APIRouter(prefix="/api/data", tags=["data"])
 
 
+def _dealer_filter(user):
+    """Return dealer_name if user is a dealer, else None."""
+    return user.dealer_name if user.role == "dealer" and user.dealer_name else None
+
+
+@router.get("/dealer-stats")
+def dealer_stats(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    df = _dealer_filter(user)
+
+    vq = db.query(Vehicle)
+    if df:
+        vq = vq.filter(Vehicle.dealer == df)
+
+    dealer_stock = vq.filter(Vehicle.status == "Dealer Stock").count()
+    in_pipeline = vq.filter(Vehicle.status.in_(["In-Transit to Dealer", "At Americas Port", "On Water"])).count()
+    sold = vq.filter(Vehicle.status == "Sold").count()
+
+    rq = db.query(RetailSale)
+    if df:
+        rq = rq.filter(RetailSale.dealer == df)
+    mtd_sales = rq.count()
+
+    # Performance KPIs
+    perf = None
+    if df:
+        perf = db.query(DealerPerformance).filter(DealerPerformance.dealer == df).first()
+
+    return {
+        "mtd_sales": mtd_sales,
+        "dealer_stock": dealer_stock,
+        "in_pipeline": in_pipeline,
+        "sold": sold,
+        "leads": perf.leads if perf else 0,
+        "test_drives": perf.test_drives if perf else 0,
+        "handovers": perf.handovers if perf else 0,
+        "on_ground": perf.on_ground if perf else 0,
+    }
+
+
 @router.get("/vehicles")
 def list_vehicles(
     dealer: Optional[str] = None,
@@ -19,9 +58,9 @@ def list_vehicles(
     db: Session = Depends(get_db),
 ):
     q = db.query(Vehicle)
-    # Dealer users can only see their own vehicles
-    if user.role == "dealer" and user.dealer_name:
-        q = q.filter(Vehicle.dealer == user.dealer_name)
+    df = _dealer_filter(user)
+    if df:
+        q = q.filter(Vehicle.dealer == df)
     elif dealer:
         q = q.filter(Vehicle.dealer == dealer)
     if status:
@@ -35,69 +74,73 @@ def list_vehicles(
 
 
 @router.get("/vehicles/search")
-def search_vins(
-    q: str = "",
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Single and mass VIN/SO# lookup."""
+def search_vins(q: str = "", user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not q or len(q) < 3:
         return {"results": [], "stats": {}}
-
-    # Split by newlines, commas, spaces for mass lookup
     terms = [t.strip() for t in q.replace(",", "\n").replace(" ", "\n").split("\n") if len(t.strip()) >= 3]
-
     results = []
     found_vins = set()
-    for term in terms[:200]:  # max 200 terms
-        matches = db.query(Vehicle).filter(
+    for term in terms[:200]:
+        query = db.query(Vehicle).filter(
             (Vehicle.vin.ilike(f"%{term}%")) | (Vehicle.so_number.ilike(f"%{term}%"))
-        ).limit(50).all()
-        for v in matches:
+        )
+        df = _dealer_filter(user)
+        if df:
+            query = query.filter(Vehicle.dealer == df)
+        for v in query.limit(50).all():
             if v.vin not in found_vins:
                 found_vins.add(v.vin)
                 results.append(_veh(v))
-
-    # Stats
     stats = {
-        "queries": len(terms),
-        "found": len(results),
-        "not_found": len(terms) - len(set(r["vin"] for r in results)),
+        "queries": len(terms), "found": len(results),
+        "not_found": max(0, len(terms) - len(results)),
         "dealer_stock": sum(1 for r in results if r["status"] == "Dealer Stock"),
         "in_pipeline": sum(1 for r in results if r["status"] in ("In-Transit to Dealer", "At Americas Port", "On Water")),
         "sold": sum(1 for r in results if r["status"] == "Sold"),
-        "total_msrp": sum(r["msrp"] for r in results),
+        "total_msrp": sum(r["msrp"] or 0 for r in results),
     }
     return {"results": results, "stats": stats}
 
 
 @router.get("/retail-sales")
-def list_retail_sales(
-    dealer: Optional[str] = None,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def list_retail_sales(dealer: Optional[str] = None, user=Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(RetailSale)
-    if user.role == "dealer" and user.dealer_name:
-        q = q.filter(RetailSale.dealer == user.dealer_name)
+    df = _dealer_filter(user)
+    if df:
+        # Show all dealers in same market for comparison
+        my_perf = db.query(DealerPerformance).filter(DealerPerformance.dealer == df).first()
+        if my_perf and my_perf.market:
+            # Get all dealers in same market
+            market_dealers = [d.dealer for d in db.query(DealerPerformance).filter(DealerPerformance.market == my_perf.market).all()]
+            q = q.filter(RetailSale.dealer.in_(market_dealers))
     elif dealer:
         q = q.filter(RetailSale.dealer == dealer)
-    rows = q.order_by(RetailSale.handover_date.desc()).all()
+    rows = q.order_by(RetailSale.dealer, RetailSale.handover_date.desc()).all()
     return [{"id": r.id, "dealer": r.dealer, "market": r.market, "vin": r.vin, "vin_full": r.vin_full,
              "body": r.body, "model_year": r.model_year, "trim": r.trim, "ext_color": r.ext_color,
              "int_color": r.int_color, "wheels": r.wheels, "channel": r.channel, "msrp": r.msrp,
              "days_to_sell": r.days_to_sell, "cvp": r.cvp, "handover_date": r.handover_date} for r in rows]
 
 
+@router.get("/retail-sales/mtd-sold")
+def mtd_sold_units(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get the logged-in dealer's MTD sold vehicles with full details."""
+    df = _dealer_filter(user)
+    if not df:
+        return []
+    rows = db.query(RetailSale).filter(RetailSale.dealer == df).order_by(RetailSale.handover_date.desc()).all()
+    return [{"id": r.id, "dealer": r.dealer, "vin": r.vin, "vin_full": r.vin_full,
+             "body": r.body, "model_year": r.model_year, "trim": r.trim, "ext_color": r.ext_color,
+             "int_color": r.int_color, "wheels": r.wheels, "channel": r.channel, "msrp": r.msrp,
+             "days_to_sell": r.days_to_sell, "handover_date": r.handover_date} for r in rows]
+
+
 @router.get("/dealer-performance")
-def list_dealer_performance(
-    dealer: Optional[str] = None,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def list_dealer_performance(dealer: Optional[str] = None, user=Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(DealerPerformance)
-    if user.role == "dealer" and user.dealer_name:
-        q = q.filter(DealerPerformance.dealer == user.dealer_name)
+    df = _dealer_filter(user)
+    if df:
+        q = q.filter(DealerPerformance.dealer == df)
     elif dealer:
         q = q.filter(DealerPerformance.dealer == dealer)
     rows = q.order_by(DealerPerformance.market, DealerPerformance.dealer).all()
@@ -117,43 +160,59 @@ def list_regional_sales(user=Depends(get_current_user), db: Session = Depends(ge
              "cvp": r.cvp} for r in rows]
 
 
-@router.get("/dealer-stats")
-def dealer_stats(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """Summary stats for dealer overview page."""
-    dealer_filter = user.dealer_name if user.role == "dealer" and user.dealer_name else None
+@router.get("/inventory")
+def dealer_inventory(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Dealer inventory breakdown: on-ground by body/MY, in-transit, turn rate."""
+    df = _dealer_filter(user)
+    q = db.query(Vehicle)
+    if df:
+        q = q.filter(Vehicle.dealer == df)
 
-    vq = db.query(Vehicle)
-    if dealer_filter:
-        vq = vq.filter(Vehicle.dealer == dealer_filter)
+    all_vehicles = q.all()
+    og = [v for v in all_vehicles if v.status == "Dealer Stock"]
+    sold = [v for v in all_vehicles if v.status == "Sold"]
+    in_transit = [v for v in all_vehicles if v.status in ("In-Transit to Dealer", "At Americas Port", "On Water")]
 
-    total_vehicles = vq.count()
-    dealer_stock = vq.filter(Vehicle.status == "Dealer Stock").count()
-    in_pipeline = vq.filter(Vehicle.status.in_(["In-Transit to Dealer", "At Americas Port", "On Water"])).count()
-    sold = vq.filter(Vehicle.status == "Sold").count()
+    # Body breakdown for on-ground
+    og_sw = sum(1 for v in og if v.body == "SW")
+    og_qm = sum(1 for v in og if v.body == "QM")
+    og_svo = sum(1 for v in og if v.body == "SVO")
 
-    rq = db.query(RetailSale)
-    if dealer_filter:
-        rq = rq.filter(RetailSale.dealer == dealer_filter)
-    mtd_sales = rq.count()
-    mtd_msrp = db.query(func.sum(RetailSale.msrp)).filter(
-        RetailSale.dealer == dealer_filter if dealer_filter else True
-    ).scalar() or 0
+    # MY breakdown for on-ground
+    og_by_my = {}
+    for v in og:
+        my = v.model_year or "Unknown"
+        og_by_my[my] = og_by_my.get(my, 0) + 1
 
-    # Dealer performance
-    perf = None
-    if dealer_filter:
-        perf = db.query(DealerPerformance).filter(DealerPerformance.dealer == dealer_filter).first()
+    # Avg days on lot for on-ground
+    dol_values = [v.days_on_lot for v in og if v.days_on_lot and v.days_on_lot > 0]
+    avg_dol = round(sum(dol_values) / len(dol_values)) if dol_values else 0
+
+    # Turn rate: sold / (sold + og) * 100
+    total_og = len(og)
+    total_sold = len(sold)
+    turn_rate = round(total_sold / (total_sold + total_og) * 100, 1) if (total_sold + total_og) > 0 else 0
+
+    # Days supply: og / (avg monthly sales)  where avg = sold count (approximation for MTD)
+    days_supply = round(total_og / (total_sold / 30) if total_sold > 0 else 0)
+
+    # Individual vehicles on ground
+    og_list = [_veh(v) for v in og]
+    it_list = [_veh(v) for v in in_transit]
 
     return {
-        "total_vehicles": total_vehicles,
-        "dealer_stock": dealer_stock,
-        "in_pipeline": in_pipeline,
-        "sold": sold,
-        "mtd_sales": mtd_sales,
-        "mtd_msrp": mtd_msrp,
-        "leads": perf.leads if perf else 0,
-        "test_drives": perf.test_drives if perf else 0,
-        "handovers": perf.handovers if perf else 0,
+        "on_ground_total": total_og,
+        "on_ground_sw": og_sw,
+        "on_ground_qm": og_qm,
+        "on_ground_svo": og_svo,
+        "on_ground_by_my": og_by_my,
+        "in_transit_total": len(in_transit),
+        "sold_mtd": total_sold,
+        "avg_days_on_lot": avg_dol,
+        "turn_rate": turn_rate,
+        "days_supply": days_supply,
+        "on_ground_vehicles": og_list,
+        "in_transit_vehicles": it_list,
     }
 
 

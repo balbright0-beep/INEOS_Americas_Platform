@@ -241,7 +241,7 @@ function DealerHub({user}){
     API.get('/api/links').then(setLinks).catch(()=>{});
     API.get('/api/last-update').then(r=>setLastUpdate(r.last_update)).catch(()=>{});
   },[]);
-  const nav=[['overview','Overview'],['bulletins','Bulletins'],['retail-sales','Retail Sales'],['performance','Dealer Performance'],['vin-lookup','VIN Lookup'],['quick-links','Quick Links']];
+  const nav=[['overview','Overview'],['bulletins','Bulletins'],['retail-sales','Retail Sales'],['performance','Performance'],['inventory','Inventory'],['vin-lookup','VIN Lookup'],['quick-links','Quick Links']];
 
   return <div className="min-h-screen flex bg-ineos-mushroom-light">
     <aside className="w-56 bg-ineos-charcoal text-white flex flex-col shrink-0 h-screen sticky top-0">
@@ -255,6 +255,7 @@ function DealerHub({user}){
       {page==='bulletins'&&<div className="p-6"><BulletinsList bulletins={bulletins}/></div>}
       {page==='retail-sales'&&<DealerRetailSales/>}
       {page==='performance'&&<DealerPerfPage/>}
+      {page==='inventory'&&<DealerInventory/>}
       {page==='vin-lookup'&&<DealerVINLookup/>}
       {page==='quick-links'&&<DealerQuickLinks links={links}/>}
     </main>
@@ -266,7 +267,7 @@ function KPI({label,value,sub,color}){return <div className="bg-white rounded-xl
 function DealerOverview({user,bulletins,setPage}){
   const[stats,setStats]=useState(null);
   useEffect(()=>{API.get('/api/data/dealer-stats').then(setStats).catch(()=>{})},[]);
-  const cards=[['Retail Sales','Track your dealership sales performance this month.','retail-sales'],['Dealer Performance','Leads, test drives, and KPIs.','performance'],['VIN Lookup','Search individual or bulk VINs.','vin-lookup'],['Quick Links','Programs, resources, and tools.','quick-links']];
+  const cards=[['Retail Sales','Track your dealership sales performance this month.','retail-sales'],['Dealer Performance','Leads, test drives, and KPIs.','performance'],['Inventory','On-ground stock, in-transit, turn rate.','inventory'],['VIN Lookup','MTD sold units and VIN search.','vin-lookup']];
   return <div className="p-6 space-y-6">
     <div><h2 className="text-2xl font-bold text-ineos-charcoal">Welcome, {user.dealer_name||user.username}</h2><p className="text-ineos-iron-smoke mt-1">Your INEOS Grenadier dealer portal.</p></div>
     {stats&&<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
@@ -287,28 +288,31 @@ function DealerOverview({user,bulletins,setPage}){
 
 /* ===== NATIVE RETAIL SALES PAGE ===== */
 function DealerRetailSales(){
-  const[data,setData]=useState([]);const[regional,setRegional]=useState([]);
-  useEffect(()=>{API.get('/api/data/retail-sales').then(setData).catch(()=>{});API.get('/api/data/regional-sales').then(setRegional).catch(()=>{})},[]);
-  const totalMSRP=data.reduce((s,r)=>s+r.msrp,0);
-  const bodyCount={};data.forEach(r=>{bodyCount[r.body]=(bodyCount[r.body]||0)+1});
+  const[data,setData]=useState([]);
+  useEffect(()=>{API.get('/api/data/retail-sales').then(setData).catch(()=>{})},[]);
+  // Group by dealer with SW/QM/SVO counts, sorted highest to lowest
+  const byDealer={};
+  data.forEach(r=>{
+    if(!byDealer[r.dealer])byDealer[r.dealer]={dealer:r.dealer,market:r.market,sw:0,qm:0,svo:0,total:0};
+    byDealer[r.dealer][r.body==='SW'?'sw':r.body==='QM'?'qm':'svo']++;
+    byDealer[r.dealer].total++;
+  });
+  const sorted=Object.values(byDealer).sort((a,b)=>b.total-a.total);
+  const grandTotal=sorted.reduce((s,d)=>s+d.total,0);
   return <div className="p-6 space-y-6">
     <h2 className="text-xl font-bold">Retail Sales — Month to Date</h2>
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <KPI label="Units Sold" value={data.length} color="text-green-600"/>
-      <KPI label="Total MSRP" value={'$'+totalMSRP.toLocaleString()}/>
-      <KPI label="Avg MSRP" value={data.length?'$'+Math.round(totalMSRP/data.length).toLocaleString():'—'}/>
-      <KPI label="Body Mix" value={Object.entries(bodyCount).map(([k,v])=>`${k}: ${v}`).join(' | ')||'—'}/>
+    <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <KPI label="Total Units (Market)" value={grandTotal} color="text-green-600"/>
+      <KPI label="SW / QM / SVO" value={`${sorted.reduce((s,d)=>s+d.sw,0)} / ${sorted.reduce((s,d)=>s+d.qm,0)} / ${sorted.reduce((s,d)=>s+d.svo,0)}`}/>
+      <KPI label="Dealers Reporting" value={sorted.length}/>
     </div>
-    {regional.length>0&&<div className="bg-white rounded-xl border border-ineos-dove p-5"><h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">Regional Summary</h3>
-      <table className="w-full text-sm"><thead><tr className="border-b border-ineos-dove text-xs uppercase text-ineos-iron-smoke tracking-wider"><th className="text-left p-2">Region</th><th className="text-right p-2">SW</th><th className="text-right p-2">QM</th><th className="text-right p-2">Total</th><th className="text-right p-2">Objective</th><th className="text-right p-2">% Obj</th></tr></thead><tbody>
-        {regional.map(r=><tr key={r.id} className="border-b border-ineos-dove/30"><td className="p-2 font-medium">{r.region}</td><td className="text-right p-2">{r.sw}</td><td className="text-right p-2">{r.qm}</td><td className="text-right p-2 font-semibold">{r.total}</td><td className="text-right p-2">{r.objective}</td><td className="text-right p-2">{r.pct_objective}%</td></tr>)}
+    <div className="bg-white rounded-xl border border-ineos-dove overflow-hidden">
+      <table className="w-full text-sm"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-xs uppercase text-ineos-iron-smoke tracking-wider">
+        <th className="text-left p-3">Dealer</th><th className="text-left p-3">Market</th><th className="text-right p-3">SW</th><th className="text-right p-3">QM</th><th className="text-right p-3">SVO</th><th className="text-right p-3 font-bold">Total</th>
+      </tr></thead><tbody>
+        {sorted.map(d=><tr key={d.dealer} className="border-b border-ineos-dove/30 hover:bg-ineos-mushroom-light/50"><td className="p-3 font-medium">{d.dealer}</td><td className="p-3 text-ineos-iron-smoke">{d.market}</td><td className="text-right p-3">{d.sw}</td><td className="text-right p-3">{d.qm}</td><td className="text-right p-3">{d.svo}</td><td className="text-right p-3 font-bold">{d.total}</td></tr>)}
       </tbody></table>
-    </div>}
-    <div className="bg-white rounded-xl border border-ineos-dove overflow-hidden"><table className="w-full text-xs"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-[10px] uppercase tracking-wider text-ineos-iron-smoke">
-      <th className="text-left p-2">VIN</th><th className="text-left p-2">Body</th><th className="text-left p-2">MY</th><th className="text-left p-2">Trim</th><th className="text-left p-2">Ext Color</th><th className="text-left p-2">Channel</th><th className="text-right p-2">MSRP</th><th className="text-right p-2">Days</th><th className="text-left p-2">Date</th>
-    </tr></thead><tbody>{data.map(r=><tr key={r.id} className="border-b border-ineos-dove/30 hover:bg-ineos-mushroom-light/50">
-      <td className="p-2 font-mono">{r.vin}</td><td className="p-2">{r.body}</td><td className="p-2">{r.model_year}</td><td className="p-2">{r.trim}</td><td className="p-2">{r.ext_color}</td><td className="p-2">{r.channel}</td><td className="text-right p-2">${r.msrp?.toLocaleString()}</td><td className="text-right p-2">{r.days_to_sell}</td><td className="p-2">{r.handover_date}</td>
-    </tr>)}</tbody></table></div>
+    </div>
     {data.length===0&&<p className="text-ineos-silver-dust text-sm text-center py-8">No retail sales data yet. Upload the Master File to populate.</p>}
   </div>;
 }
@@ -334,31 +338,70 @@ function DealerPerfPage(){
   </div>;
 }
 
-/* ===== NATIVE VIN LOOKUP PAGE ===== */
+/* ===== NATIVE VIN LOOKUP PAGE (MTD Sold Units + Search) ===== */
 function DealerVINLookup(){
-  const[query,setQuery]=useState('');const[results,setResults]=useState([]);const[stats,setStats]=useState(null);const[loading,setLoading]=useState(false);const[mode,setMode]=useState('single');
-  const search=async()=>{if(!query.trim())return;setLoading(true);try{const r=await API.get(`/api/data/vehicles/search?q=${encodeURIComponent(query)}`);setResults(r.results);setStats(r.stats)}catch{}finally{setLoading(false)}};
+  const[query,setQuery]=useState('');const[results,setResults]=useState([]);const[stats,setStats]=useState(null);const[loading,setLoading]=useState(false);const[mode,setMode]=useState('sold');const[soldUnits,setSoldUnits]=useState([]);
+  useEffect(()=>{API.get('/api/data/retail-sales/mtd-sold').then(setSoldUnits).catch(()=>{})},[]);
+  const search=async()=>{if(!query.trim())return;setLoading(true);try{const r=await API.get(`/api/data/vehicles/search?q=${encodeURIComponent(query)}`);setResults(r.results);setStats(r.stats);setMode('search')}catch{}finally{setLoading(false)}};
   const STAT_COLORS={Sold:'text-blue-600',"Dealer Stock":'text-green-600',"In-Transit to Dealer":'text-amber-600',"At Americas Port":'text-purple-600',"On Water":'text-cyan-600'};
   return <div className="p-6 space-y-6">
     <h2 className="text-xl font-bold">VIN Lookup</h2>
-    <div className="flex gap-2 mb-2"><button onClick={()=>setMode('single')} className={`text-xs px-3 py-1 rounded ${mode==='single'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>Single VIN</button><button onClick={()=>setMode('mass')} className={`text-xs px-3 py-1 rounded ${mode==='mass'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>Mass Lookup</button></div>
-    <div className="bg-white rounded-xl border border-ineos-dove p-5">
+    <div className="flex gap-2 mb-2">
+      <button onClick={()=>setMode('sold')} className={`text-xs px-3 py-1 rounded ${mode==='sold'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>MTD Sold Units</button>
+      <button onClick={()=>setMode('single')} className={`text-xs px-3 py-1 rounded ${mode==='single'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>Single VIN</button>
+      <button onClick={()=>setMode('mass')} className={`text-xs px-3 py-1 rounded ${mode==='mass'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>Mass Lookup</button>
+    </div>
+    {mode==='sold'&&<div>
+      <KPI label="MTD Units Sold" value={soldUnits.length} color="text-green-600"/>
+      {soldUnits.length>0&&<div className="bg-white rounded-xl border border-ineos-dove overflow-hidden mt-4"><table className="w-full text-xs"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-[10px] uppercase tracking-wider text-ineos-iron-smoke">
+        <th className="text-left p-2">VIN</th><th className="text-left p-2">Body</th><th className="text-left p-2">MY</th><th className="text-left p-2">Trim</th><th className="text-left p-2">Ext Color</th><th className="text-left p-2">Channel</th><th className="text-right p-2">MSRP</th><th className="text-right p-2">Days to Sell</th><th className="text-left p-2">Date</th>
+      </tr></thead><tbody>{soldUnits.map(r=><tr key={r.id} className="border-b border-ineos-dove/30 hover:bg-ineos-mushroom-light/50">
+        <td className="p-2 font-mono font-medium">{r.vin_full||r.vin}</td><td className="p-2">{r.body}</td><td className="p-2">{r.model_year}</td><td className="p-2">{r.trim}</td><td className="p-2">{r.ext_color}</td><td className="p-2">{r.channel}</td><td className="text-right p-2">${r.msrp?.toLocaleString()}</td><td className="text-right p-2">{r.days_to_sell}</td><td className="p-2">{r.handover_date}</td>
+      </tr>)}</tbody></table></div>}
+      {soldUnits.length===0&&<p className="text-ineos-silver-dust text-sm text-center py-4 mt-4">No MTD sold units yet.</p>}
+    </div>}
+    {(mode==='single'||mode==='mass')&&<div className="bg-white rounded-xl border border-ineos-dove p-5">
       {mode==='single'?<div className="flex gap-3"><input className="flex-1 border border-ineos-dove rounded px-3 py-2 text-sm" placeholder="Enter VIN or Sales Order #..." value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==='Enter'&&search()}/><button onClick={search} disabled={loading} className="bg-ineos-red text-white rounded px-6 py-2 text-sm font-medium disabled:opacity-50">{loading?'Searching...':'Search'}</button></div>
       :<div><textarea className="w-full border border-ineos-dove rounded px-3 py-2 text-sm h-32 font-mono" placeholder="Paste multiple VINs or SO#s (one per line, comma or space separated)..." value={query} onChange={e=>setQuery(e.target.value)}/><button onClick={search} disabled={loading} className="bg-ineos-red text-white rounded px-6 py-2 text-sm font-medium mt-2 disabled:opacity-50">{loading?'Searching...':'Search All'}</button></div>}
-    </div>
-    {stats&&<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-      <KPI label="Queries" value={stats.queries}/>
-      <KPI label="Found" value={stats.found} color="text-green-600"/>
-      <KPI label="Not Found" value={stats.not_found} color="text-red-500"/>
-      <KPI label="Dealer Stock" value={stats.dealer_stock} color="text-green-600"/>
-      <KPI label="Total MSRP" value={'$'+(stats.total_msrp||0).toLocaleString()}/>
     </div>}
-    {results.length>0&&<div className="bg-white rounded-xl border border-ineos-dove overflow-hidden"><table className="w-full text-xs"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-[10px] uppercase tracking-wider text-ineos-iron-smoke">
-      <th className="text-left p-2">VIN</th><th className="text-left p-2">Status</th><th className="text-left p-2">Body</th><th className="text-left p-2">MY</th><th className="text-left p-2">Trim</th><th className="text-left p-2">Ext Color</th><th className="text-left p-2">Dealer</th><th className="text-right p-2">MSRP</th><th className="text-left p-2">Channel</th><th className="text-right p-2">DOL</th>
+    {mode==='search'&&stats&&<div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <KPI label="Queries" value={stats.queries}/><KPI label="Found" value={stats.found} color="text-green-600"/><KPI label="Not Found" value={stats.not_found} color="text-red-500"/><KPI label="Dealer Stock" value={stats.dealer_stock} color="text-green-600"/><KPI label="Total MSRP" value={'$'+(stats.total_msrp||0).toLocaleString()}/>
+    </div>}
+    {mode==='search'&&results.length>0&&<div className="bg-white rounded-xl border border-ineos-dove overflow-hidden"><table className="w-full text-xs"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-[10px] uppercase tracking-wider text-ineos-iron-smoke">
+      <th className="text-left p-2">VIN</th><th className="text-left p-2">Status</th><th className="text-left p-2">Body</th><th className="text-left p-2">MY</th><th className="text-left p-2">Trim</th><th className="text-left p-2">Ext Color</th><th className="text-right p-2">MSRP</th><th className="text-left p-2">Channel</th><th className="text-right p-2">DOL</th>
     </tr></thead><tbody>{results.map(v=><tr key={v.vin} className="border-b border-ineos-dove/30 hover:bg-ineos-mushroom-light/50">
-      <td className="p-2 font-mono font-medium">{v.vin}</td><td className="p-2"><span className={`font-medium ${STAT_COLORS[v.status]||'text-ineos-iron-smoke'}`}>{v.status}</span></td><td className="p-2">{v.body}</td><td className="p-2">{v.model_year}</td><td className="p-2">{v.trim}</td><td className="p-2">{v.ext_color}</td><td className="p-2">{v.dealer}</td><td className="text-right p-2">${v.msrp?.toLocaleString()}</td><td className="p-2">{v.channel}</td><td className="text-right p-2">{v.days_on_lot}</td>
+      <td className="p-2 font-mono font-medium">{v.vin}</td><td className="p-2"><span className={`font-medium ${STAT_COLORS[v.status]||'text-ineos-iron-smoke'}`}>{v.status}</span></td><td className="p-2">{v.body}</td><td className="p-2">{v.model_year}</td><td className="p-2">{v.trim}</td><td className="p-2">{v.ext_color}</td><td className="text-right p-2">${v.msrp?.toLocaleString()}</td><td className="p-2">{v.channel}</td><td className="text-right p-2">{v.days_on_lot}</td>
     </tr>)}</tbody></table></div>}
-    {results.length===0&&!stats&&<p className="text-ineos-silver-dust text-sm text-center py-4">Enter a VIN or Sales Order number to search.</p>}
+  </div>;
+}
+
+/* ===== DEALER INVENTORY PAGE ===== */
+function DealerInventory(){
+  const[inv,setInv]=useState(null);const[tab,setTab]=useState('ground');
+  useEffect(()=>{API.get('/api/data/inventory').then(setInv).catch(()=>{})},[]);
+  if(!inv)return <div className="p-6 text-ineos-silver-dust">Loading inventory...</div>;
+  const STAT_COLORS={"Dealer Stock":'text-green-600',"In-Transit to Dealer":'text-amber-600',"At Americas Port":'text-purple-600',"On Water":'text-cyan-600'};
+  return <div className="p-6 space-y-6">
+    <h2 className="text-xl font-bold">Dealer Inventory</h2>
+    <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+      <KPI label="On Ground" value={inv.on_ground_total} color="text-green-600"/>
+      <KPI label="SW / QM / SVO" value={`${inv.on_ground_sw} / ${inv.on_ground_qm} / ${inv.on_ground_svo}`}/>
+      <KPI label="In Transit" value={inv.in_transit_total} color="text-amber-600"/>
+      <KPI label="Avg Days on Lot" value={inv.avg_days_on_lot}/>
+      <KPI label="Turn Rate" value={`${inv.turn_rate}%`} color={inv.turn_rate>50?'text-green-600':'text-amber-600'}/>
+      <KPI label="Days Supply" value={inv.days_supply}/>
+    </div>
+    {Object.keys(inv.on_ground_by_my).length>0&&<div className="bg-white rounded-xl border border-ineos-dove p-5">
+      <h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">On Ground by Model Year</h3>
+      <div className="flex gap-4">{Object.entries(inv.on_ground_by_my).sort().map(([my,ct])=><div key={my} className="text-center"><div className="text-2xl font-bold text-ineos-onyx">{ct}</div><div className="text-xs text-ineos-iron-smoke">{my}</div></div>)}</div>
+    </div>}
+    <div className="flex gap-2"><button onClick={()=>setTab('ground')} className={`text-xs px-3 py-1 rounded ${tab==='ground'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>On Ground ({inv.on_ground_total})</button><button onClick={()=>setTab('transit')} className={`text-xs px-3 py-1 rounded ${tab==='transit'?'bg-ineos-charcoal text-white':'bg-ineos-mushroom text-ineos-onyx'}`}>In Transit ({inv.in_transit_total})</button></div>
+    <div className="bg-white rounded-xl border border-ineos-dove overflow-hidden"><table className="w-full text-xs"><thead><tr className="border-b border-ineos-dove bg-ineos-mushroom-light text-[10px] uppercase tracking-wider text-ineos-iron-smoke">
+      <th className="text-left p-2">VIN</th><th className="text-left p-2">Status</th><th className="text-left p-2">Body</th><th className="text-left p-2">MY</th><th className="text-left p-2">Trim</th><th className="text-left p-2">Ext Color</th><th className="text-right p-2">MSRP</th><th className="text-right p-2">{tab==='ground'?'Days on Lot':'ETA'}</th><th className="text-left p-2">Channel</th>
+    </tr></thead><tbody>{(tab==='ground'?inv.on_ground_vehicles:inv.in_transit_vehicles).map(v=><tr key={v.vin} className="border-b border-ineos-dove/30 hover:bg-ineos-mushroom-light/50">
+      <td className="p-2 font-mono font-medium">{v.vin}</td><td className="p-2"><span className={`font-medium ${STAT_COLORS[v.status]||''}`}>{v.status}</span></td><td className="p-2">{v.body}</td><td className="p-2">{v.model_year}</td><td className="p-2">{v.trim}</td><td className="p-2">{v.ext_color}</td><td className="text-right p-2">${v.msrp?.toLocaleString()}</td><td className="text-right p-2">{tab==='ground'?v.days_on_lot:v.eta}</td><td className="p-2">{v.channel}</td>
+    </tr>)}</tbody></table></div>
+    {inv.on_ground_total===0&&inv.in_transit_total===0&&<p className="text-ineos-silver-dust text-sm text-center py-4">No inventory data. Upload the Master File to populate.</p>}
   </div>;
 }
 
