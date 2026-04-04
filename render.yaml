@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: ineos-americas-platform
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt && pip install psycopg2-binary
+    startCommand: bash start.sh
