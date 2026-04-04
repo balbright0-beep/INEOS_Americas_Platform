@@ -7,9 +7,12 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script>tailwind.config={theme:{extend:{colors:{ineos:{red:'#FF4639',onyx:'#1D1D1D',charcoal:'#171717',mushroom:'#D9D7D0','mushroom-light':'#FAFAF9',dove:'#E9E8E5','iron-smoke':'#606060','silver-dust':'#9F9F9F'}},fontFamily:{sans:['Inter','system-ui','sans-serif']}}}}</script>
-<style>iframe{border:none;width:100%;height:100%}</style>
+<link rel="stylesheet" href="/ids.css">
+<script>tailwind.config={theme:{extend:{colors:{ineos:{red:'#FF4639',onyx:'#1D1D1D',charcoal:'#171717',mushroom:'#D9D7D0','mushroom-light':'#FAFAF9',dove:'#E9E8E5','iron-smoke':'#606060','silver-dust':'#9F9F9F'}},fontFamily:{sans:["'Plus Jakarta Sans'",'Inter','system-ui','sans-serif'],body:['Inter','system-ui','sans-serif'],mono:["'JetBrains Mono'",'monospace']}}}}</script>
+<style>
+iframe{border:none;width:100%;height:100%}
+body{font-family:var(--ids-font-body);background:var(--ids-surface-page);color:var(--ids-text-primary)}
+</style>
 </head>
 <body class="font-sans"><div id="root"></div>
 <script type="text/babel">
@@ -55,23 +58,30 @@ function LoginPage({onLogin}){
 
 /* ===== INTERNAL HUB ===== */
 function InternalHub({user}){
-  const[page,setPage]=useState('tools');const[bulletins,setBulletins]=useState([]);
+  const[page,setPage]=useState('tools');const[bulletins,setBulletins]=useState([]);const[cmdOpen,setCmdOpen]=useState(false);
   useEffect(()=>{API.get('/api/bulletins').then(setBulletins).catch(()=>{})},[]);
   const isAdmin=user.role==='admin';
   const nav=[['tools','Tools'],['bulletins','Bulletins']];
   if(isAdmin)nav.push(['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload']);
 
-  return <div className="min-h-screen bg-ineos-mushroom-light">
-    <nav className="bg-ineos-charcoal text-white">
-      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3"><div className="w-9 h-9 bg-ineos-red rounded flex items-center justify-center font-bold text-sm">IN</div><div><div className="text-base font-semibold">INEOS Americas</div><div className="text-[10px] text-ineos-silver-dust uppercase tracking-widest">Internal Hub</div></div></div>
-        <div className="flex items-center gap-4 text-sm">
-          {nav.map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`px-2 py-1 ${page===k?'text-white border-b-2 border-ineos-red':'text-ineos-mushroom hover:text-white'}`}>{l}</button>)}
-          <button onClick={()=>API.logout()} className="text-ineos-silver-dust hover:text-white ml-4 text-xs">Sign Out</button>
-        </div>
+  return <div className="ids-layout" style={{minHeight:'100vh'}}>
+    <aside className="ids-sidebar">
+      <div className="ids-sidebar-header">
+        <div className="ids-sidebar-logo">IN</div>
+        <div><div className="ids-sidebar-brand">INEOS Americas</div><div className="ids-sidebar-sub">Internal Hub</div></div>
       </div>
-    </nav>
-    <div className="max-w-7xl mx-auto px-6 py-8">
+      <button className="ids-cmd-trigger" onClick={()=>setCmdOpen(true)}><span>Search...</span><kbd>⌘K</kbd></button>
+      <nav className="ids-nav">
+        <div className="ids-nav-group"><div className="ids-nav-group-label">Hub</div>
+          {[['tools','Tools'],['bulletins','Bulletins']].map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`ids-nav-item ${page===k?'active':''}`}>{l}</button>)}
+        </div>
+        {isAdmin&&<div className="ids-nav-group"><div className="ids-nav-group-label">Admin</div>
+          {[['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload']].map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`ids-nav-item ${page===k?'active':''}`}>{l}</button>)}
+        </div>}
+      </nav>
+      <div className="ids-sidebar-footer"><button onClick={()=>API.logout()} style={{background:'none',border:'none',color:'inherit',cursor:'pointer',fontSize:'12px'}}>Sign Out</button></div>
+    </aside>
+    <main className="ids-main" style={{background:'var(--ids-surface-page)',padding:'24px 32px'}}>
       {page==='tools'&&<ToolsPage bulletins={bulletins}/>}
       {page==='bulletins'&&<BulletinsList bulletins={bulletins}/>}
       {page==='dealer-preview'&&<DealerPreview user={user}/>}
