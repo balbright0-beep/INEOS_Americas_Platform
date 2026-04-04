@@ -78,6 +78,14 @@ async def upload_master(file: UploadFile = File(...), admin=Depends(require_admi
         except Exception as e:
             results["allocation"] = f"error: {e}"
 
+    # Process data for Platform's own database
+    try:
+        from app.processor import process_master_file
+        counts = process_master_file(contents, db)
+        results["platform_data"] = counts
+    except Exception as e:
+        results["platform_data"] = f"error: {e}"
+
     # Store timestamp
     state = db.query(AppState).filter(AppState.key == "last_master_upload").first()
     if not state:

@@ -5,3 +5,5 @@ bcrypt
 python-jose[cryptography]
 python-multipart
 httpx
+msoffcrypto-tool
+pyxlsb

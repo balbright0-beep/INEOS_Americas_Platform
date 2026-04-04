@@ -45,3 +45,85 @@ class AppState(Base):
     id = Column(Integer, primary_key=True)
     key = Column(String, unique=True, nullable=False)
     value = Column(Text)
+
+
+# ===== DEALER DATA TABLES =====
+
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+    id = Column(Integer, primary_key=True)
+    vin = Column(String, index=True)
+    dealer = Column(String, index=True)
+    market = Column(String)
+    country = Column(String)
+    body = Column(String)
+    model_year = Column(String)
+    status = Column(String, index=True)
+    msrp = Column(Integer)
+    trim = Column(String)
+    ext_color = Column(String)
+    int_color = Column(String)
+    roof = Column(String)
+    wheels = Column(String)
+    channel = Column(String)
+    plant = Column(String)
+    handover_date = Column(String)
+    eta = Column(String)
+    vessel = Column(String)
+    days_on_lot = Column(Integer)
+    so_number = Column(String)
+
+
+class RetailSale(Base):
+    __tablename__ = "retail_sales"
+    id = Column(Integer, primary_key=True)
+    dealer = Column(String, index=True)
+    market = Column(String)
+    vin = Column(String)
+    vin_full = Column(String)
+    body = Column(String)
+    model_year = Column(String)
+    trim = Column(String)
+    ext_color = Column(String)
+    int_color = Column(String)
+    wheels = Column(String)
+    channel = Column(String)
+    msrp = Column(Integer)
+    days_to_sell = Column(Integer)
+    cvp = Column(String)
+    handover_date = Column(String)
+
+
+class DealerPerformance(Base):
+    __tablename__ = "dealer_performance"
+    id = Column(Integer, primary_key=True)
+    dealer = Column(String, index=True)
+    market = Column(String)
+    handovers = Column(Integer, default=0)
+    cvp = Column(Integer, default=0)
+    wholesales = Column(Integer, default=0)
+    on_ground = Column(Integer, default=0)
+    dealer_stock = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    test_drives = Column(Integer, default=0)
+    td_completed = Column(Integer, default=0)
+    td_show_pct = Column(String)
+    lead_to_td_pct = Column(String)
+    won = Column(Integer, default=0)
+    lost = Column(Integer, default=0)
+    mb30 = Column(String)
+    mb60 = Column(String)
+    mb90 = Column(String)
+
+
+class RegionalSales(Base):
+    __tablename__ = "regional_sales"
+    id = Column(Integer, primary_key=True)
+    region = Column(String)
+    sw = Column(Integer, default=0)
+    qm = Column(Integer, default=0)
+    svo = Column(Integer, default=0)
+    total = Column(Integer, default=0)
+    objective = Column(Integer, default=0)
+    pct_objective = Column(String)
+    cvp = Column(Integer, default=0)

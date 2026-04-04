@@ -8,7 +8,7 @@ from app.config import *  # noqa
 from app.database import engine, Base, SessionLocal
 from app.models import *  # noqa
 from app.seed import seed_database
-from app.routers import auth, admin, bulletins, links
+from app.routers import auth, admin, bulletins, links, data
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(bulletins.router)
 app.include_router(links.router)
+app.include_router(data.router)
 
 # Public last-update endpoint (no auth required)
 from app.database import get_db
