@@ -10,7 +10,8 @@ router = APIRouter(prefix="/api/data", tags=["data"])
 
 
 def _dealer_filter(user):
-    return user.dealer_name if user.role == "dealer" and user.dealer_name else None
+    """Return dealer_name uppercased (DB stores uppercase dealer names)."""
+    return user.dealer_name.upper() if user.role == "dealer" and user.dealer_name else None
 
 
 def _dfq(q, col, dealer_name):

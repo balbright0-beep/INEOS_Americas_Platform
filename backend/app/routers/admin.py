@@ -134,16 +134,16 @@ async def upload_master(file: UploadFile = File(...), admin=Depends(require_admi
     month_start = f"{month}-01"
     month_end = f"{month}-31"
     for dp in db.query(DealerPerformance).all():
-        # CRITICAL FIX: Filter retail sales to current month only
+        # Use uppercase exact match (processor normalizes to uppercase)
+        dlr_upper = dp.dealer.upper()
         sales = db.query(RetailSale).filter(
-            RetailSale.dealer.ilike(f"%{dp.dealer}%"),
+            RetailSale.dealer == dlr_upper,
             RetailSale.handover_date >= month_start,
             RetailSale.handover_date <= month_end,
         ).count()
-        og = db.query(Vehicle).filter(Vehicle.dealer.ilike(f"%{dp.dealer}%"), Vehicle.status == "Dealer Stock").count()
-        # Calculate avg days to sell for this month
+        og = db.query(Vehicle).filter(Vehicle.dealer == dlr_upper, Vehicle.status == "Dealer Stock").count()
         avg_dts_rows = db.query(RetailSale.days_to_sell).filter(
-            RetailSale.dealer.ilike(f"%{dp.dealer}%"),
+            RetailSale.dealer == dlr_upper,
             RetailSale.handover_date >= month_start,
             RetailSale.handover_date <= month_end,
             RetailSale.days_to_sell > 0,

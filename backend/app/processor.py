@@ -1,8 +1,9 @@
-"""Simplified Master File processor for dealer-relevant data extraction."""
+"""Master File processor — column indices aligned with dashboard_refresh_all_in_one.py"""
 import io
 import os
 import tempfile
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 import msoffcrypto
 from pyxlsb import open_workbook
@@ -28,28 +29,24 @@ def ss(x):
 
 
 def serial_to_date(s):
-    """Convert Excel serial date to datetime. Handles Excel's 1900 leap year bug."""
+    """Convert Excel serial date to datetime (same formula as Dashboard)."""
     if not s: return None
     try:
-        serial = int(float(s))
-        if serial < 1: return None
-        # Excel incorrectly treats 1900 as a leap year (serial 60 = Feb 29, 1900)
-        # For dates after serial 60, subtract 1 to correct
-        if serial > 60:
-            serial -= 1
-        return datetime(1899, 12, 31) + timedelta(days=serial)
+        return datetime(1899, 12, 30) + timedelta(days=int(float(s)))
     except:
         return None
 
 
 def clean_dealer(name):
     d = ss(name)
-    for rm in [" INEOS Grenadier", " INEOS GRENADIER", " INEOS", " Grenadier", " GRENADIER"]:
-        d = d.replace(rm, "")
+    d = d.replace(" INEOS Grenadier", "").replace(" INEOS GRENADIER", "")
+    d = d.replace(" INEOS", "").replace(" Grenadier", "").replace(" GRENADIER", "")
+    d = " ".join(w for w in d.split() if w.upper() != "GRENADIER")
     return d.strip()
 
 
 def export_dealer(r):
+    """Same logic as Dashboard — col 58 (Bill To) if available, else col 0."""
     bt = ss(r[58]).strip() if len(r) > 58 and r[58] else ""
     if bt and bt != "Not Handed Over":
         d = bt
@@ -59,55 +56,77 @@ def export_dealer(r):
 
 
 def process_master_file(file_bytes: bytes, db: Session):
-    """Process Master File and store dealer data in database.
-    Uses secure temp file handling and proper transaction management."""
+    """Process Master File — column indices match Dashboard exactly."""
     errors = []
 
-    # Decrypt using secure temp file
+    # Decrypt
     office_file = msoffcrypto.OfficeFile(io.BytesIO(file_bytes))
     office_file.load_key(password="INEOS26")
     buf = io.BytesIO()
     office_file.decrypt(buf)
     buf.seek(0)
 
-    # Use secure temp file instead of fixed /tmp path
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsb", delete=False)
     try:
         tmp.write(buf.getvalue())
         tmp.close()
-
         wb = open_workbook(tmp.name)
 
-        # Build market map from RBM Assignments
+        # === BUILD MARKET MAP (same as Dashboard: row 5+, dealer=col3, market=col5) ===
         mkt_map = {}
         try:
+            rows = []
             with wb.get_sheet("RBM Assignments") as sheet:
-                for i, row in enumerate(sheet.rows()):
-                    if i < 2: continue
-                    vals = [c.v for c in row]
-                    dealer = clean_dealer(vals[1] if len(vals) > 1 else "")
-                    mkt = ss(vals[3] if len(vals) > 3 else "")
-                    if dealer and mkt:
-                        mkt_map[dealer.upper()] = mkt
+                for row in sheet.rows():
+                    rows.append([c.v for c in row])
+            for r in rows[5:]:
+                if r and len(r) > 5 and r[3] and r[5]:
+                    name = ss(r[3]).replace(" INEOS Grenadier", "").replace(" INEOS", "").strip()
+                    market = ss(r[5])
+                    mkt_map[name] = market
+                    mkt_map[name.upper()] = market
+            # Extras (same as Dashboard)
+            extras = {
+                "Mossy SD": "Western", "MOSSY SD": "Western",
+                "Mossy TX": "Central", "MOSSY TX": "Central",
+                "RTGT": "Western", "Crown Dublin": "Northeast", "CROWN DUBLIN": "Northeast",
+                "Sewell SA": "Central", "SEWELL SAN ANTONIO": "Central",
+                "DILAWRI": "Canada", "WEISSACH": "Canada", "CALGARY": "Canada",
+            }
+            mkt_map.update(extras)
         except Exception as e:
             errors.append(f"RBM Assignments: {e}")
 
-        # Clear existing data and commit immediately
+        def lookup_mkt(dealer_name):
+            n = dealer_name.strip()
+            if n in mkt_map: return mkt_map[n]
+            if n.upper() in mkt_map: return mkt_map[n.upper()]
+            for k, v in mkt_map.items():
+                if n.upper() in k.upper() or k.upper() in n.upper():
+                    return v
+            return ""
+
+        # Clear existing data and commit
         db.query(Vehicle).delete()
         db.query(RetailSale).delete()
         db.query(DealerPerformance).delete()
         db.query(RegionalSales).delete()
-        db.commit()  # Commit deletes before inserting new data
+        db.commit()
 
         # === EXTRACT VEHICLES (Export sheet) ===
+        # Column indices aligned with Dashboard:
+        # [0]=Customer, [7]=Material, [8]=VIN, [11]=Country, [13]=Status, [14]=Channel
+        # [18]=MSRP, [19]=Trim, [21]=ExtColor, [22]=IntColor, [23]=Roof, [25]=Wheels
+        # [50]=Plant, [51]=Handover, [52]=ETA, [53]=Vessel, [56]=DaysOnLot/DIS, [57]=SO#, [58]=BillTo
         export_rows = []
         try:
             with wb.get_sheet("Export") as sheet:
                 for i, row in enumerate(sheet.rows()):
                     vals = [c.v for c in row]
                     if i <= 1: continue
-                    country = ss(vals[6]) if len(vals) > 6 else ""
-                    if country not in ("United States", "Canada", "US", "CA"):
+                    country = ss(vals[11]) if len(vals) > 11 else ""
+                    cu = country.upper()
+                    if "UNITED STATES" not in cu and "CANADA" not in cu:
                         continue
                     export_rows.append(vals)
         except Exception as e:
@@ -118,14 +137,13 @@ def process_master_file(file_bytes: bytes, db: Session):
         vehicle_count = 0
 
         for r in export_rows:
-            dealer = export_dealer(r)
-            vin = ss(r[3]) if len(r) > 3 else ""
+            dealer = export_dealer(r).upper()  # Normalize uppercase
+            vin = ss(r[8]) if len(r) > 8 else ""  # Col 8 = VIN
             if not vin or len(vin) < 5:
                 continue
 
-            mkt = mkt_map.get(dealer.upper(), "")
+            mkt = lookup_mkt(dealer)
 
-            # Column 7 = material description (contains both body type and model year)
             material = ss(r[7]) if len(r) > 7 else ""
             material_upper = material.upper()
             body = "SVO" if "SVO" in material_upper else "QM" if "QUARTERMASTER" in material_upper else "SW"
@@ -137,11 +155,9 @@ def process_master_file(file_bytes: bytes, db: Session):
                     break
 
             channel = ss(r[14]) if len(r) > 14 else ""
-            ho_serial = r[51] if len(r) > 51 else None
-            ho_date = serial_to_date(ho_serial)
+            ho_date = serial_to_date(r[51]) if len(r) > 51 else None
             ho_str = ho_date.strftime("%Y-%m-%d") if ho_date else ""
 
-            # Determine status
             if channel in ("STOCK", "PRIVATE - RETAILER") and not ho_date:
                 status = "Dealer Stock"
             elif ho_date:
@@ -149,32 +165,38 @@ def process_master_file(file_bytes: bytes, db: Session):
             else:
                 status = ss(r[13]) if len(r) > 13 else "Unknown"
 
-            eta_serial = r[50] if len(r) > 50 else None
-            eta_date = serial_to_date(eta_serial)
+            eta_date = serial_to_date(r[52]) if len(r) > 52 else None  # Col 52 = ETA
 
             v = Vehicle(
-                vin=vin, dealer=dealer, market=mkt, country=ss(r[6]) if len(r) > 6 else "",
-                body=body, model_year=my, status=status, msrp=vi(r[18]) if len(r) > 18 else 0,
-                trim=ss(r[19]) if len(r) > 19 else "", ext_color=ss(r[21]) if len(r) > 21 else "",
-                int_color=ss(r[22]) if len(r) > 22 else "", roof=ss(r[23]) if len(r) > 23 else "",
-                wheels=ss(r[25]) if len(r) > 25 else "", channel=channel,
-                plant=ss(r[15]) if len(r) > 15 else "",
-                handover_date=ho_str, eta=eta_date.strftime("%Y-%m-%d") if eta_date else "",
-                vessel=ss(r[52]) if len(r) > 52 else "",
+                vin=vin, dealer=dealer, market=mkt,
+                country=ss(r[11]) if len(r) > 11 else "",  # Col 11 = Country
+                body=body, model_year=my, status=status,
+                msrp=vi(r[18]) if len(r) > 18 else 0,
+                trim=ss(r[19]) if len(r) > 19 else "",
+                ext_color=ss(r[21]) if len(r) > 21 else "",
+                int_color=ss(r[22]) if len(r) > 22 else "",
+                roof=ss(r[23]) if len(r) > 23 else "",
+                wheels=ss(r[25]) if len(r) > 25 else "",
+                channel=channel,
+                plant=ss(r[50]) if len(r) > 50 else "",  # Col 50 = Plant
+                handover_date=ho_str,
+                eta=eta_date.strftime("%Y-%m-%d") if eta_date else "",
+                vessel=ss(r[53]) if len(r) > 53 else "",  # Col 53 = Vessel
                 days_on_lot=vi(r[56]) if len(r) > 56 else 0,
                 so_number=ss(r[57]) if len(r) > 57 else "",
             )
             db.add(v)
             vehicle_count += 1
 
-            # Retail sale if handover in current month
             if ho_str.startswith(cur_month):
                 rs = RetailSale(
                     dealer=dealer, market=mkt, vin=vin[-6:], vin_full=vin,
-                    body=body, model_year=my, trim=ss(r[19]) if len(r) > 19 else "",
+                    body=body, model_year=my,
+                    trim=ss(r[19]) if len(r) > 19 else "",
                     ext_color=ss(r[21]) if len(r) > 21 else "",
                     int_color=ss(r[22]) if len(r) > 22 else "",
-                    wheels=ss(r[25]) if len(r) > 25 else "", channel=channel,
+                    wheels=ss(r[25]) if len(r) > 25 else "",
+                    channel=channel,
                     msrp=vi(r[18]) if len(r) > 18 else 0,
                     days_to_sell=vi(r[56]) if len(r) > 56 else 0,
                     cvp=ss(r[62]) if len(r) > 62 else "",
@@ -182,14 +204,14 @@ def process_master_file(file_bytes: bytes, db: Session):
                 )
                 db.add(rs)
 
-        # === EXTRACT DEALER PERFORMANCE ===
+        # === DEALER PERFORMANCE (same columns as Dashboard build_DPD) ===
         perf_count = 0
         try:
             with wb.get_sheet("Dealer Performance Dashboard") as sheet:
                 for i, row in enumerate(sheet.rows()):
                     if i < 2: continue
                     vals = [c.v for c in row]
-                    dealer = clean_dealer(vals[1] if len(vals) > 1 else "")
+                    dealer = clean_dealer(ss(vals[1]) if len(vals) > 1 else "")
                     if not dealer: continue
                     dp = DealerPerformance(
                         dealer=dealer, market=ss(vals[0]) if len(vals) > 0 else "",
@@ -214,7 +236,7 @@ def process_master_file(file_bytes: bytes, db: Session):
         except Exception as e:
             errors.append(f"Dealer Performance: {e}")
 
-        # === EXTRACT REGIONAL SALES ===
+        # === REGIONAL SALES ===
         regional_count = 0
         try:
             with wb.get_sheet("Retail Sales Report") as sheet:
@@ -241,17 +263,15 @@ def process_master_file(file_bytes: bytes, db: Session):
         db.commit()
 
     finally:
-        # Always clean up temp file
         try:
             os.unlink(tmp.name)
         except:
             pass
 
-    counts = {
+    return {
         "vehicles": vehicle_count,
         "retail_sales": db.query(RetailSale).count(),
         "dealer_performance": perf_count,
         "regional_sales": regional_count,
         "errors": errors,
     }
-    return counts
