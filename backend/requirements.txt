@@ -7,3 +7,6 @@ python-multipart
 httpx
 msoffcrypto-tool
 pyxlsb
+google-analytics-data>=0.18
+google-auth>=2.0
+google-auth-oauthlib>=1.0

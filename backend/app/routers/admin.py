@@ -182,6 +182,41 @@ def last_update(db: Session = Depends(get_db)):
     return {"last_update": state.value if state else None}
 
 
+# --- GA4 API Pull ---
+@router.post("/pull-ga4")
+async def pull_ga4(days: int = 90, admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Pull all 6 GA4 reports via Google Analytics Data API."""
+    import os
+    try:
+        from app.ga4_api import fetch_all_reports, save_reports_to_cache
+        client_secret = os.environ.get('GA4_CLIENT_SECRET_PATH', 'ga4_credentials.json')
+        start = (datetime.utcnow() - __import__('datetime').timedelta(days=days)).strftime('%Y-%m-%d')
+        results = fetch_all_reports(client_secret, start_date=start)
+        # Save to cache
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        meta = save_reports_to_cache(results, cache_dir)
+        # Store last GA4 pull timestamp
+        state = db.query(AppState).filter(AppState.key == "last_ga4_pull").first()
+        if not state:
+            state = AppState(key="last_ga4_pull")
+            db.add(state)
+        state.value = datetime.utcnow().isoformat()
+        db.commit()
+        audit(db, "pull_ga4", admin.username, f"Pulled {days}d GA4 data: {sum(v.get('row_count',0) for v in meta.values())} total rows")
+        return {"status": "success", "reports": {k: {"rows": v.get("row_count", 0)} for k, v in meta.items()}}
+    except ImportError:
+        return {"status": "error", "error": "GA4 API libraries not installed. Add google-analytics-data and google-auth-oauthlib to requirements."}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/last-ga4-pull")
+def last_ga4_pull(db: Session = Depends(get_db)):
+    state = db.query(AppState).filter(AppState.key == "last_ga4_pull").first()
+    return {"last_pull": state.value if state else None}
+
+
 # --- Audit Log ---
 @router.get("/audit-log")
 def get_audit_log(limit: int = 100, admin=Depends(require_admin), db: Session = Depends(get_db)):
