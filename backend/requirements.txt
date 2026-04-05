@@ -7,6 +7,8 @@ python-multipart
 httpx
 msoffcrypto-tool
 pyxlsb
+pandas
+pyarrow
 google-analytics-data
 google-auth
 google-auth-oauthlib
