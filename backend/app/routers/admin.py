@@ -205,8 +205,8 @@ async def pull_ga4(days: int = 90, admin=Depends(require_admin), db: Session = D
         db.commit()
         audit(db, "pull_ga4", admin.username, f"Pulled {days}d GA4 data: {sum(v.get('row_count',0) for v in meta.values())} total rows")
         return {"status": "success", "reports": {k: {"rows": v.get("row_count", 0)} for k, v in meta.items()}}
-    except ImportError:
-        return {"status": "error", "error": "GA4 API libraries not installed. Add google-analytics-data and google-auth-oauthlib to requirements."}
+    except ImportError as ie:
+        return {"status": "error", "error": f"GA4 API libraries not installed: {ie}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

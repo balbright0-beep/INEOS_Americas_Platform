@@ -7,7 +7,9 @@ python-multipart
 httpx
 msoffcrypto-tool
 pyxlsb
-google-analytics-data>=0.18
-google-auth>=2.0
-google-auth-oauthlib>=1.0
-# GA4 API integration
+google-analytics-data
+google-auth
+google-auth-oauthlib
+grpcio
+proto-plus
+protobuf
