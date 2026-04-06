@@ -287,6 +287,11 @@ function AdminDataUpload(){
   const[ga4Loading,setGa4Loading]=useState(false);const[ga4Status,setGa4Status]=useState(null);
   useEffect(()=>{API.get('/api/admin/data-sources').then(setSources).catch(()=>{})},[]);
 
+  // Master File upload (separate from individual sources)
+  const[masterFile,setMasterFile]=useState(null);const[masterLoading,setMasterLoading]=useState(false);const[masterResult,setMasterResult]=useState(null);const[lastMaster,setLastMaster]=useState(null);
+  useEffect(()=>{API.get('/api/admin/last-update').then(r=>setLastMaster(r.last_update)).catch(()=>{})},[]);
+  const uploadMaster=async()=>{if(!masterFile)return;setMasterLoading(true);setMasterResult(null);try{const r=await API.uploadFile('/api/admin/upload-master',masterFile);setMasterResult(r);if(r.timestamp)setLastMaster(r.timestamp);toast('Master File uploaded and Dashboard synced!','success')}catch(e){setMasterResult({error:e.message});toast('Upload failed','error')}finally{setMasterLoading(false)}};
+
   const CARDS=[
     {id:'sap_export',label:'SAP Vehicle Export',desc:'Daily vehicle data export from SAP (~21K rows, 50 cols). Primary vehicle data source.',cadence:'Daily',accept:'.xlsx',color:'#FF4639'},
     {id:'sap_handover',label:'SAP Handover Report',desc:'Handover dates, revenue recognition, retail dates. Indexed by VIN.',cadence:'Daily',accept:'.xlsx',color:'#C75B39'},
@@ -320,9 +325,25 @@ function AdminDataUpload(){
   return <div>
     <div className="flex items-center justify-between mb-4">
       <div><h2 className="text-xl font-bold">Data Sources</h2><p className="text-xs text-ineos-iron-smoke mt-1">Upload raw source files to refresh all dashboards. No more Master File needed.</p></div>
-      <button onClick={rebuildAll} className="bg-ineos-charcoal text-white rounded px-5 py-2 text-sm font-medium hover:opacity-90">Rebuild All Dashboards</button>
     </div>
 
+    <div className="rounded-xl p-5 mb-6" style={{background:'#E8F5E9',borderLeft:'4px solid #2E7D32'}}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="font-semibold text-base" style={{fontFamily:'var(--ids-font-heading)'}}>Master File Upload</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,0.7)',color:'#2E7D32'}}>PRIMARY</span>
+      </div>
+      <p className="text-xs text-ineos-iron-smoke mb-2">Upload the Master File V14 (.xlsb) to refresh the Americas Dashboard, Allocation Tool, and Platform data. This is the primary daily update.</p>
+      {lastMaster&&<p className="text-xs text-green-700 mb-2">Last upload: {new Date(lastMaster).toLocaleString()}</p>}
+      <div className="flex items-center gap-3">
+        <input type="file" id="master-file" accept=".xlsb,.xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])setMasterFile(e.target.files[0]);e.target.value=''}}/>
+        <label htmlFor="master-file" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:'#2E7D32'}}>{masterFile?masterFile.name:'Choose Master File'}</label>
+        {masterFile&&<button onClick={uploadMaster} disabled={masterLoading} className="px-4 py-2 rounded text-sm font-medium text-white disabled:opacity-50" style={{background:'#FF4639'}}>{masterLoading?'Uploading & Processing...':'Upload & Refresh All'}</button>}
+      </div>
+      {masterResult&&!masterResult.error&&<div className="mt-2 text-xs text-green-700">Dashboard: {masterResult.results?.dashboard} | Allocation: {masterResult.results?.allocation} {masterResult.results?.dashboard_synced&&'| Dashboard synced to Platform'}</div>}
+      {masterResult?.error&&<p className="mt-2 text-xs text-red-600">{masterResult.error}</p>}
+    </div>
+
+    <h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">Individual Source Files (Future Data Hub)</h3>
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {CARDS.map(card=>{
         const s=sources[card.id]||{};
