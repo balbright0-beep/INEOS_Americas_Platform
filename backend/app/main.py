@@ -51,6 +51,18 @@ app.include_router(bulletins.router)
 app.include_router(links.router)
 app.include_router(data.router)
 
+# Serve generated Dashboard HTML
+@app.get("/dashboard", response_class=HTMLResponse)
+async def serve_dashboard():
+    """Serve the latest generated Americas Dashboard."""
+    dash_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs', 'Americas_Daily_Dashboard.html')
+    if os.path.exists(dash_path):
+        with open(dash_path, 'r', encoding='utf-8') as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<html><body><h1>Dashboard not generated yet</h1><p>Go to Data Upload and click 'Rebuild All Dashboards' after uploading source files.</p></body></html>")
+
+from fastapi.responses import HTMLResponse
+
 # Public last-update endpoint (no auth required)
 from app.database import get_db
 from app.models import AppState

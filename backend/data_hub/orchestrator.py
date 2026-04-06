@@ -13,6 +13,7 @@ from data_hub.ingest.santander import ingest_santander, update_santander_cache
 from data_hub.ingest.urban_science import ingest_urban_science
 from data_hub.ingest.ga4 import ingest_ga4
 from data_hub.enrichment import enrich
+from data_hub.dashboard_generator import generate_dashboard
 from data_hub.compute.engine import (
     compute_retail_sales, compute_dpd, compute_pipeline,
     compute_inventory, compute_historical_sales, compute_vex,
@@ -228,10 +229,39 @@ class DataHub:
         with open(cache_path, 'w') as f:
             json.dump(compute_results, f, default=str)
 
+        # Generate Dashboard HTML if template exists
+        dashboard_result = None
+        if os.path.exists(self.template_path):
+            try:
+                output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
+                dashboard_result = generate_dashboard(compute_results, self.template_path, output_html)
+                errors_dash = []
+
+                # Push to Dashboard App
+                try:
+                    import httpx
+                    dash_url = os.environ.get('DASHBOARD_URL', 'https://ineos-dashboard-app.onrender.com')
+                    # The Dashboard App serves the HTML at / — we need to update it
+                    # Upload the generated HTML as if it were the processed output
+                    with open(output_html, 'rb') as f:
+                        html_bytes = f.read()
+                    # Write directly to Dashboard App's data directory
+                    # Since we can't write to another Render service's filesystem,
+                    # we'll serve it from the Platform instead
+                    dashboard_result['served_from'] = 'platform'
+                except Exception as e:
+                    errors_dash.append(f'Dashboard push: {e}')
+
+                if errors_dash:
+                    errors.extend(errors_dash)
+            except Exception as e:
+                errors.append(f'Dashboard generation: {e}')
+
         return {
             'status': 'success',
             'computed': list(compute_results.keys()),
             'errors': errors,
             'vehicle_count': len(enriched),
             'timestamp': today.isoformat(),
+            'dashboard': dashboard_result,
         }

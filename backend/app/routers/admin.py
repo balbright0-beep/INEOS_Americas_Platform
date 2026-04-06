@@ -348,7 +348,13 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
         import sys, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from data_hub.orchestrator import DataHub
-        hub = DataHub(cache_dir='cache', ref_db_path='reference/reference.db')
+        base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        hub = DataHub(
+            cache_dir=os.path.join(base, 'cache'),
+            ref_db_path=os.path.join(base, 'reference', 'reference.db'),
+            template_path=os.path.join(base, 'templates', 'dashboard_template.html'),
+            output_dir=os.path.join(base, 'outputs'),
+        )
         result = hub.rebuild_dashboard()
         audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles")
         return result
