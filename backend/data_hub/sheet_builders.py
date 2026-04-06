@@ -52,18 +52,9 @@ def _date_to_serial(d):
     return None
 
 
-def _serial_to_date(s):
-    if not s:
-        return None
-    try:
-        return datetime(1899, 12, 30) + timedelta(days=int(float(s)))
-    except Exception:
-        return None
-
-
 def _detect_body(material):
     m = str(material).lower()
-    if 'quartermaster' in m or 'qm' in m:
+    if 'quartermaster' in m or ' qm' in m:
         return 'qm'
     if 'svo' in m:
         return 'svo'
@@ -95,24 +86,22 @@ def _get_country_code(country):
     return ''
 
 
-# Market region mapping
-MARKET_REGIONS = {
-    'Central': 'Central', 'Southeast': 'Southeast',
-    'Northeast': 'Northeast', 'Western': 'Western',
-    'Canada': 'Canada', 'Mexico': 'Mexico',
-}
-
-
-def _get_market(sap_row, mkt_map=None):
-    """Get market from SAP row, with fallback to market map."""
-    for col in ('market_area', 'region_group', 'Country Region Group'):
-        v = sap_row.get(col, '')
-        if v and _safe_str(v):
-            return _safe_str(v)
-    if mkt_map:
-        dealer = _norm_dealer(sap_row.get('customer_name', '')).upper()
-        return mkt_map.get(dealer, '')
-    return ''
+def _safe_date(val):
+    """Safely convert a value to a datetime or return None."""
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        dt = pd.to_datetime(val, errors='coerce')
+        if pd.isna(dt):
+            return None
+        return dt
+    except Exception:
+        return None
 
 
 def _build_market_map(sap):
@@ -130,10 +119,10 @@ def _build_market_map(sap):
 
 
 def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None):
-    """Parse SAP export into a list of dicts with enriched fields."""
+    """Parse SAP export into enriched row dicts matching the Master File's Export sheet."""
     rows = []
 
-    # Build VIN lookups
+    # VIN → handover data
     ho_map = {}
     if handover is not None and len(handover) > 0:
         for _, r in handover.iterrows():
@@ -141,6 +130,7 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             if len(vin) > 3:
                 ho_map[vin] = r
 
+    # VIN → bill-to-dealer
     billto_map = {}
     if sales_order is not None and len(sales_order) > 0:
         for _, r in sales_order.iterrows():
@@ -148,6 +138,7 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             if len(vin) > 3:
                 billto_map[vin] = _safe_str(r.get('bill_to_dealer', r.get('customer_name', '')))
 
+    # VIN → CVP
     cvp_vins = set()
     if campaign_codes is not None and len(campaign_codes) > 0:
         if 'campaign_type' in campaign_codes.columns:
@@ -168,37 +159,25 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
         dealer_raw = bill_to if (bill_to and bill_to != 'Not Handed Over') else customer
         dealer = _norm_dealer(dealer_raw)
 
-        # Handover date
+        # Handover date from handover report
         ho = ho_map.get(vin, None)
         ho_date = None
         if ho is not None:
             hd = ho.get('handover_date', None) if isinstance(ho, dict) else getattr(ho, 'handover_date', None)
-            if hd is not None:
-                try:
-                    if not pd.isna(hd):
-                        ho_date = pd.to_datetime(hd, errors='coerce')
-                        if pd.isna(ho_date):
-                            ho_date = None
-                except (TypeError, ValueError):
-                    ho_date = None
+            ho_date = _safe_date(hd)
 
-        # Fallback: invoice date
+        # Fallback: invoice date from SAP
         if ho_date is None:
-            inv_d = r.get('invoice_date', None)
-            if inv_d is not None:
-                try:
-                    if not pd.isna(inv_d):
-                        ho_date = pd.to_datetime(inv_d, errors='coerce')
-                        if pd.isna(ho_date):
-                            ho_date = None
-                except (TypeError, ValueError):
-                    ho_date = None
+            ho_date = _safe_date(r.get('invoice_date', None))
 
-        market = _get_market(r, mkt_map)
-        body = _detect_body(material)
-        my = _detect_my(material)
-        cc = _get_country_code(country)
-        is_cvp = vin in cvp_vins
+        # Market
+        market = ''
+        for col in ('market_area', 'region_group'):
+            market = _safe_str(r.get(col, ''))
+            if market:
+                break
+        if not market:
+            market = mkt_map.get(dealer.upper(), '')
 
         rows.append({
             'vin': vin,
@@ -206,15 +185,15 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             'dealer_upper': dealer.upper(),
             'material': material,
             'country': country,
-            'country_code': cc,
+            'country_code': _get_country_code(country),
             'status': status,
             'channel': channel,
             'market': market,
-            'body': body,
-            'my': my,
+            'body': _detect_body(material),
+            'my': _detect_my(material),
             'msrp': r.get('msrp', 0),
             'ho_date': ho_date,
-            'is_cvp': is_cvp,
+            'is_cvp': vin in cvp_vins,
             'plant': _safe_str(r.get('plant_code', '')),
             'trim': _safe_str(r.get('trim', '')),
         })
@@ -227,56 +206,66 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
-    """Populate the Retail Sales Report sheet.
+    """Populate Retail Sales Report.
 
-    Layout: rows 0-5 = header area, rows 6-13 = regional summary
-    Cols: [2]=region, [3]=SW, [4]=QM, [5]=SVO, [6]=total, [7]=obj, [8]=PO%, [9]=MX%, [15]=CVP
-
-    Then rows 22+ = MTD_DLR detailed dealer breakdown
+    Rows 6-13: regional summary → [2]=region [3]=SW [4]=QM [5]=SVO [6]=total [7]=obj [8]=PO% [9]=MX% [15]=CVP
+    Rows 22+: MTD_DLR per-dealer → [1]=region header or [2]=dealer name, [3]=SW [4]=QM [5]=SVO [6]=total [7]=PM [8]=PY
     """
     today = datetime.now()
     cur_month = today.strftime('%Y-%m')
-    prev_dt = (today.replace(day=1) - timedelta(days=1))
-    prev_month = prev_dt.strftime('%Y-%m')
+    prev_month = (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
+    prev_year_month = f'{today.year - 1}-{today.strftime("%m")}'
 
-    # Count MTD sales by region/body
-    region_data = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
-
-    for r in export_rows:
-        if not r['ho_date']:
-            continue
-        if r['ho_date'].strftime('%Y-%m') != cur_month:
-            continue
-        if r['country_code'] not in ('US', 'CA', 'MX'):
-            continue
-
-        mkt = r['market'] or 'Unknown'
-        region_data[mkt][r['body']] += 1
-        if r['is_cvp']:
-            region_data[mkt]['cvp'] += 1
-
-    # Objectives by region (from template if available)
+    region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
     obj_by_region = objectives or {}
 
-    # Compute region order
-    region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
+    # ── Count MTD sales by region/body ──
+    region_mtd = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
+    dealer_data = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'total': 0,
+                                        'pm': 0, 'py': 0, 'cvp': 0, 'market': ''})
 
-    # Header rows (0-5)
-    ws.append(['', '', 'RETAIL SALES REPORT'] + [''] * 17)
-    ws.append(['', '', f'{today.strftime("%B %Y")} MTD'] + [''] * 17)
-    for i in range(4):
+    for r in export_rows:
+        if r['country_code'] not in ('US', 'CA', 'MX'):
+            continue
+        if not r['ho_date']:
+            continue
+
+        ho_ym = r['ho_date'].strftime('%Y-%m')
+        mkt = r['market'] or 'Unknown'
+        dk = r['dealer_upper']
+
+        if not dealer_data[dk]['market']:
+            dealer_data[dk]['market'] = mkt
+
+        if ho_ym == cur_month:
+            region_mtd[mkt][r['body']] += 1
+            if r['is_cvp']:
+                region_mtd[mkt]['cvp'] += 1
+            dealer_data[dk][r['body']] += 1
+            dealer_data[dk]['total'] += 1
+            if r['is_cvp']:
+                dealer_data[dk]['cvp'] += 1
+
+        if ho_ym == prev_month:
+            dealer_data[dk]['pm'] += 1
+        if ho_ym == prev_year_month:
+            dealer_data[dk]['py'] += 1
+
+    # ── Header rows 0-5 ──
+    for i in range(6):
         ws.append([''] * 20)
 
-    # Regional summary rows (6-13)
+    # ── Regional summary rows 6-13 ──
+    total_all = sum(d['sw'] + d['qm'] + d['svo'] for d in region_mtd.values())
     total = {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0, 'obj': 0}
+
     for region in region_order:
-        d = region_data.get(region, {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
-        sw, qm, svo, cvp = d['sw'], d['qm'], d['svo'], d['cvp']
+        d = region_mtd.get(region, {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
+        sw, qm, svo, cvp_n = d['sw'], d['qm'], d['svo'], d['cvp']
         t = sw + qm + svo
         obj = obj_by_region.get(region, 0)
-        po = round(t / obj * 100, 1) if obj > 0 else 0
-        total_all = sum(dd['sw'] + dd['qm'] + dd['svo'] for dd in region_data.values())
-        mx = round(t / total_all * 100, 1) if total_all > 0 else 0
+        po = (t / obj) if obj > 0 else 0
+        mx = (t / total_all) if total_all > 0 else 0
 
         row = [''] * 20
         row[2] = region
@@ -285,20 +274,17 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
         row[5] = svo
         row[6] = t
         row[7] = obj
-        row[8] = po / 100  # stored as decimal, processor multiplies by 100
-        row[9] = mx / 100
-        row[15] = cvp
+        row[8] = po
+        row[9] = mx
+        row[15] = cvp_n
         ws.append(row)
 
-        total['sw'] += sw
-        total['qm'] += qm
-        total['svo'] += svo
-        total['cvp'] += cvp
+        for k in ('sw', 'qm', 'svo', 'cvp'):
+            total[k] += d.get(k, 0)
         total['obj'] += obj
 
-    # Total row (index 12 or 13 depending on region count)
-    remaining = 8 - len(region_order)
-    for _ in range(remaining):
+    # Pad remaining rows to index 12 (Total at 13)
+    while ws.max_row < 13:
         ws.append([''] * 20)
 
     t_total = total['sw'] + total['qm'] + total['svo']
@@ -309,59 +295,27 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
     row[5] = total['svo']
     row[6] = t_total
     row[7] = total['obj']
-    row[8] = round(t_total / total['obj'], 3) if total['obj'] > 0 else 0
+    row[8] = (t_total / total['obj']) if total['obj'] > 0 else 0
     row[9] = 1.0
     row[15] = total['cvp']
     ws.append(row)
 
-    # Padding to row 21
+    # ── Pad to row 22 for MTD_DLR section ──
     while ws.max_row < 22:
         ws.append([''] * 20)
 
-    # MTD_DLR section (rows 22+)
-    # Group by region → dealer
-    dealer_data = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'total': 0,
-                                        'pm': 0, 'py': 0, 'cvp': 0, 'market': ''})
-
-    prev_year_month = f'{today.year - 1}-{today.strftime("%m")}'
-
-    for r in export_rows:
-        if r['country_code'] not in ('US', 'CA', 'MX'):
-            continue
-        if not r['ho_date']:
-            continue
-
-        ho_ym = r['ho_date'].strftime('%Y-%m')
-        dk = r['dealer_upper']
-
-        if not dealer_data[dk]['market']:
-            dealer_data[dk]['market'] = r['market']
-
-        if ho_ym == cur_month:
-            dealer_data[dk][r['body']] += 1
-            dealer_data[dk]['total'] += 1
-            if r['is_cvp']:
-                dealer_data[dk]['cvp'] += 1
-
-        if ho_ym == prev_month:
-            dealer_data[dk]['pm'] += 1
-
-        if ho_ym == prev_year_month:
-            dealer_data[dk]['py'] += 1
-
-    # Write MTD_DLR by region
+    # ── MTD_DLR rows 22+ by region ──
     for region in region_order:
-        # Region header
+        # Region header row: col[1]=region name, col[2]=empty
         row = [''] * 20
         row[1] = region
         ws.append(row)
 
-        # Dealers in this region
-        region_dealers = [(dk, dd) for dk, dd in dealer_data.items()
-                          if dd['market'] == region and dd['total'] > 0]
-        region_dealers.sort(key=lambda x: -x[1]['total'])
+        dealers = [(dk, dd) for dk, dd in dealer_data.items()
+                   if dd['market'] == region and dd['total'] > 0]
+        dealers.sort(key=lambda x: -x[1]['total'])
 
-        for dk, dd in region_dealers:
+        for dk, dd in dealers:
             row = [''] * 20
             row[2] = dk.title()
             row[3] = dd['sw']
@@ -370,34 +324,57 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
             row[6] = dd['total']
             row[7] = dd['pm']
             row[8] = dd['py']
-            row[9] = round(dd['total'] / dd['pm'] * 100, 1) if dd['pm'] > 0 else 0
-            row[10] = round(dd['total'] / dd['py'] * 100, 1) if dd['py'] > 0 else 0
             row[15] = dd['cvp']
             ws.append(row)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Dealer Performance Dashboard
+# Dealer Performance Dashboard (DPD)
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_dpd_sheet(ws, export_rows, mkt_map):
-    """Populate the DPD sheet.
+def build_dpd_sheet(ws, export_rows, mkt_map, leads=None):
+    """Populate DPD sheet — exactly 27 columns per dealer row.
 
-    Layout: rows 0-2 = header, rows 3+ = dealer rows
-    Cols: [0]=market, [1]=dealer, [2]=handovers(MTD), [3]=CVP, [4]=wholesale,
-          [5]=gap, [6]=on-ground, [7]=dollar, [8]=count
+    Processor reads rows 3+:
+    [0]=market [1]=dealer [2]=handovers(MTD) [3]=CVP [4]=wholesale [5]=W/S gap
+    [6]=on-ground [7]=dollar_sales [8]=dollar_count
+    [9-14]=monthly sales (6 recent months)
+    [15]=R3M_avg [16]=R3M_total [17]=R_leads [18]=R_leads_total
+    [19]=TD_booked [20]=TD_total [21]=TD_won [22]=TD_pct
+    [23-26]=MB30%/MB60%/MB90%/MB_all_time%
     """
     today = datetime.now()
     cur_month = today.strftime('%Y-%m')
-    prev_dt = (today.replace(day=1) - timedelta(days=1))
-    prev_month = prev_dt.strftime('%Y-%m')
-    prev_year_month = f'{today.year - 1}-{today.strftime("%m")}'
 
-    # Dealer stats
+    # Build 6 recent month labels (e.g., for Apr 2026: Oct,Nov,Dec,Jan,Feb,Mar)
+    recent_months = []
+    for i in range(6, 0, -1):
+        dt = today.replace(day=1) - timedelta(days=30 * i)
+        recent_months.append(dt.strftime('%Y-%m'))
+
+    prev_3_months = recent_months[-3:]
+
+    # Accumulate per-dealer stats
     stats = defaultdict(lambda: {
-        'market': '', 'mtd': 0, 'cvp': 0, 'sw': 0, 'qm': 0, 'svo': 0,
-        'pm': 0, 'py': 0, 'og': 0, 'og_sw': 0, 'og_qm': 0,
+        'market': '', 'mtd_ho': 0, 'cvp': 0, 'og': 0,
+        'monthly': defaultdict(int),  # ym → handovers
     })
+
+    # Lead stats by dealer
+    lead_stats = defaultdict(lambda: {'leads': 0, 'td_booked': 0, 'td_completed': 0})
+    if leads is not None and len(leads) > 0:
+        for _, lr in leads.iterrows():
+            dealer = _norm_dealer(_safe_str(lr.get('retailer_name', ''))).upper()
+            if not dealer:
+                continue
+            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+            if ld and ld.strftime('%Y-%m') >= recent_months[0]:
+                lead_stats[dealer]['leads'] += 1
+            td = _safe_date(lr.get('td_booking_date', None))
+            if td:
+                lead_stats[dealer]['td_booked'] += 1
+            if _safe_str(lr.get('td_completed_flag', '')).lower() in ('yes', 'true', '1'):
+                lead_stats[dealer]['td_completed'] += 1
 
     for r in export_rows:
         if r['country_code'] not in ('US', 'CA', 'MX'):
@@ -407,51 +384,73 @@ def build_dpd_sheet(ws, export_rows, mkt_map):
         if not stats[dk]['market']:
             stats[dk]['market'] = r['market']
 
-        # On-ground (dealer stock, retail channels)
+        # On-ground
         if ('dealer stock' in r['status'] or '7.' in r['status']):
             if r['channel'] in ('STOCK', 'PRIVATE - RETAILER'):
                 stats[dk]['og'] += 1
-                if r['body'] == 'sw':
-                    stats[dk]['og_sw'] += 1
-                else:
-                    stats[dk]['og_qm'] += 1
 
-        # Sales
+        # Sales by month
         if r['ho_date']:
             ho_ym = r['ho_date'].strftime('%Y-%m')
+            stats[dk]['monthly'][ho_ym] += 1
             if ho_ym == cur_month:
-                stats[dk]['mtd'] += 1
-                stats[dk][r['body']] += 1
+                stats[dk]['mtd_ho'] += 1
                 if r['is_cvp']:
                     stats[dk]['cvp'] += 1
-            if ho_ym == prev_month:
-                stats[dk]['pm'] += 1
-            if ho_ym == prev_year_month:
-                stats[dk]['py'] += 1
 
-    # Header rows
+    # ── Header rows (0-2) ──
     ws.append(['Market', 'Dealer', 'Handovers', 'CVP', 'Wholesale', 'Gap',
-               'On Ground', 'Dollar', 'Count'] + [''] * 20)
-    ws.append([''] * 30)
-    ws.append([''] * 30)
+               'On Ground', 'DollarSales', 'DollarCount'] +
+              [f'Mo{i}' for i in range(6)] +
+              ['R3M', 'R3M_T', 'Leads', 'Leads_T', 'TD', 'TD_T', 'TD_Won', 'TD%',
+               'MB30', 'MB60', 'MB90', 'MB_AT'])
+    ws.append([''] * 27)
+    ws.append([''] * 27)
 
-    # Data rows (sorted by market then dealer)
+    # ── Data rows (3+) sorted by market ──
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
     for region in region_order:
-        dealers = [(dk, s) for dk, s in stats.items() if s['market'] == region]
-        dealers.sort(key=lambda x: -x[1]['mtd'])
+        dealers = [(dk, s) for dk, s in stats.items()
+                   if s['market'] == region and (s['mtd_ho'] > 0 or s['og'] > 0)]
+        dealers.sort(key=lambda x: -x[1]['mtd_ho'])
+
         for dk, s in dealers:
-            row = [''] * 30
-            row[0] = s['market']
+            # Monthly values for 6 recent months
+            mo_vals = [s['monthly'].get(ym, 0) for ym in recent_months]
+
+            # R3M (rolling 3-month average)
+            r3m_vals = [s['monthly'].get(ym, 0) for ym in prev_3_months]
+            r3m = round(sum(r3m_vals) / 3, 1) if r3m_vals else 0
+            r3m_total = sum(r3m_vals)
+
+            # Lead data
+            ld = lead_stats.get(dk, {'leads': 0, 'td_booked': 0, 'td_completed': 0})
+
+            row = [''] * 27
+            row[0] = region
             row[1] = dk.title()
-            row[2] = s['mtd']
+            row[2] = s['mtd_ho']
             row[3] = s['cvp']
             row[4] = 0  # wholesale
-            row[5] = 0  # gap
+            row[5] = '1.00:1'  # gap
             row[6] = s['og']
-            # Monthly history placeholder
-            row[9] = s['pm']   # recent month
-            row[10] = s['py']  # prior year
+            row[7] = 0  # dollar sales
+            row[8] = 0  # dollar count
+            for i, mv in enumerate(mo_vals):
+                row[9 + i] = mv
+            row[15] = r3m
+            row[16] = r3m_total
+            row[17] = ld['leads']
+            row[18] = ld['leads']  # total leads
+            row[19] = ld['td_booked']
+            row[20] = ld['td_booked']
+            row[21] = ld['td_completed']
+            row[22] = round(ld['td_completed'] / ld['td_booked'], 3) if ld['td_booked'] > 0 else 0
+            # Matchback percentages (we don't have this data)
+            row[23] = 0  # MB30
+            row[24] = 0  # MB60
+            row[25] = 0  # MB90
+            row[26] = 0  # MB all-time
             ws.append(row)
 
 
@@ -460,16 +459,15 @@ def build_dpd_sheet(ws, export_rows, mkt_map):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_inventory_sheet(ws, export_rows, mkt_map):
-    """Populate the Dealer Inventory Report sheet.
+    """Populate Dealer Inventory Report.
 
     Note: The processor RECOMPUTES INV from Export data (lines 3090-3278),
-    so this sheet mainly needs dealer names and markets for the initial
-    INV build. The Export-based recomputation will override most values.
-    """
-    today = datetime.now()
-    cur_month = today.strftime('%Y-%m')
+    so this sheet primarily needs dealer names and markets for the initial
+    INV build. The Export-based recomputation overrides most values.
 
-    # Collect unique dealers with their markets
+    Processor reads rows 3+: [1]=market, [2]=dealer name
+    """
+    # Collect unique dealers
     dealers = {}
     for r in export_rows:
         if r['country_code'] not in ('US', 'CA', 'MX'):
@@ -479,17 +477,16 @@ def build_inventory_sheet(ws, export_rows, mkt_map):
             dealers[dk] = {'name': r['dealer'], 'market': r['market']}
 
     # Header rows (0-2)
-    ws.append(['', '', 'Dealer', 'MY24 SW', 'MY24 QM', 'MY25 SW', 'MY25 QM',
-               'MY26 SW', 'MY26 QM', '', '', 'OG SW', 'OG QM'] + [''] * 32)
+    ws.append(['', 'Market', 'Dealer'] + [''] * 42)
     ws.append([''] * 45)
     ws.append([''] * 45)
 
     # Data rows (row 3+)
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
     for region in region_order:
-        region_dealers = [(dk, d) for dk, d in dealers.items() if d['market'] == region]
-        region_dealers.sort(key=lambda x: x[1]['name'])
-        for dk, d in region_dealers:
+        rd = [(dk, d) for dk, d in dealers.items() if d['market'] == region]
+        rd.sort(key=lambda x: x[1]['name'])
+        for dk, d in rd:
             row = [''] * 45
             row[1] = d['market']
             row[2] = d['name']
@@ -501,36 +498,26 @@ def build_inventory_sheet(ws, export_rows, mkt_map):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_objectives_sheet(ws, template_path=None):
-    """Populate the Objectives sheet.
+    """Populate Objectives from existing Dashboard template HTML.
 
-    Objectives are manually entered business targets. We extract them
-    from the existing Dashboard template HTML (which has OBJ constant
-    from the last Master File upload) if available.
-
-    Layout: row 2=US, row 4=Retailer, row 5=Rental, row 6=Fleet,
-            row 7=IECP, row 8=Total. Cols 9-20 = 12 monthly values.
+    Processor reads: row 2=US, row 4=Retailer, row 5=Rental, row 6=Fleet,
+    row 7=IECP, row 8=Total. Cols 9-20 = 12 monthly values.
     """
     obj_data = {}
-
-    # Try to extract OBJ from template HTML
     if template_path and os.path.exists(template_path):
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 html = f.read()
-            # Find const OBJ = {...};
             m = re.search(r'const\s+OBJ\s*=\s*(\{.*?\});', html, re.DOTALL)
             if m:
                 obj_data = json.loads(m.group(1))
         except Exception as e:
             print(f"  [Objectives] Could not extract from template: {e}")
 
-    # Row mapping: category → row index
     cat_rows = {'US': 2, 'Retailer': 4, 'Rental': 5, 'Fleet': 6, 'IECP': 7, 'Total': 8}
 
-    # Write rows 0-14
     for i in range(15):
         row = [''] * 25
-        # Find if this row maps to a category
         for cat, row_idx in cat_rows.items():
             if i == row_idx:
                 row[0] = cat
@@ -548,20 +535,16 @@ def build_objectives_sheet(ws, template_path=None):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_historical_sheet(ws, export_rows, mkt_map):
-    """Populate the Historical Sales sheet.
+    """Populate Historical Sales.
 
-    Layout: Row 1=month dates (serial), Row 2=total retail, Row 3=SW,
-    Row 4=QM, Row 5=SVO, Row 10=wholesale, Row 11=WS SW, Row 12=WS QM
-    Rows 30-68 = retail by dealer, Rows 70-102 = wholesale by dealer
+    Processor reads: Row 1=dates(serial), Row 2=total, Row 3=SW, Row 4=QM,
+    Row 5=SVO, Rows 30-68=retail by dealer.
     """
-    # Collect monthly sales from handover dates
     monthly = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'total': 0})
     dealer_monthly = defaultdict(lambda: defaultdict(int))
 
     for r in export_rows:
-        if not r['ho_date']:
-            continue
-        if r['country_code'] not in ('US', 'CA', 'MX'):
+        if not r['ho_date'] or r['country_code'] not in ('US', 'CA', 'MX'):
             continue
         ym = r['ho_date'].strftime('%Y-%m')
         monthly[ym][r['body']] += 1
@@ -573,64 +556,40 @@ def build_historical_sheet(ws, export_rows, mkt_map):
             ws.append([''] * 15)
         return
 
-    # Sort months
     all_months = sorted(monthly.keys())
+    ncols = len(all_months) + 2
 
-    # Row 0: header
-    ws.append([''] * (len(all_months) + 2))
+    # Row 0: empty header
+    ws.append([''] * ncols)
 
-    # Row 1: dates (1st of each month as serial)
+    # Row 1: date serials
     date_row = ['', 'Month']
     for ym in all_months:
         y, m = ym.split('-')
-        dt = datetime(int(y), int(m), 1)
-        date_row.append(_date_to_serial(dt))
+        date_row.append(_date_to_serial(datetime(int(y), int(m), 1)))
     ws.append(date_row)
 
-    # Row 2: total retail
-    total_row = ['', 'Total Retail']
-    for ym in all_months:
-        total_row.append(monthly[ym]['total'])
-    ws.append(total_row)
-
-    # Row 3: SW
-    sw_row = ['', 'SW']
-    for ym in all_months:
-        sw_row.append(monthly[ym]['sw'])
-    ws.append(sw_row)
-
-    # Row 4: QM
-    qm_row = ['', 'QM']
-    for ym in all_months:
-        qm_row.append(monthly[ym]['qm'])
-    ws.append(qm_row)
-
-    # Row 5: SVO
-    svo_row = ['', 'SVO']
-    for ym in all_months:
-        svo_row.append(monthly[ym]['svo'])
-    ws.append(svo_row)
+    # Row 2-5: totals by body type
+    for label, key in [('Total Retail', 'total'), ('SW', 'sw'), ('QM', 'qm'), ('SVO', 'svo')]:
+        ws.append(['', label] + [monthly[ym][key] for ym in all_months])
 
     # Rows 6-9: padding
     for _ in range(4):
-        ws.append([''] * (len(all_months) + 2))
+        ws.append([''] * ncols)
 
-    # Row 10-12: wholesale (no data from our sources, zeros)
+    # Row 10-12: wholesale (no data)
     for label in ['Wholesale Total', 'WS SW', 'WS QM']:
         ws.append(['', label] + [0] * len(all_months))
 
-    # Padding to row 29
+    # Pad to row 29
     while ws.max_row < 30:
-        ws.append([''] * (len(all_months) + 2))
+        ws.append([''] * ncols)
 
     # Rows 30+: retail by dealer
     all_dealers = sorted(dealer_monthly.keys())
-    for dk in all_dealers[:38]:  # cap at 38 dealers (rows 30-67)
+    for dk in all_dealers[:38]:
         mkt = mkt_map.get(dk, '')
-        row = [mkt, dk.title()]
-        for ym in all_months:
-            row.append(dealer_monthly[dk].get(ym, 0))
-        ws.append(row)
+        ws.append([mkt, dk.title()] + [dealer_monthly[dk].get(ym, 0) for ym in all_months])
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -638,109 +597,93 @@ def build_historical_sheet(ws, export_rows, mkt_map):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_lead_kpis_sheet(ws, leads, mkt_map):
-    """Populate Lead Handling KPIs sheet.
+    """Populate Lead Handling KPIs.
 
-    Layout: rows 0-3 = header, rows 4+ = dealer rows
-    Cols: [0]=market, [1]=dealer, [2]=RBM, [3]=leads, [4]=contacted,
-          [5]=contact%, [6]=UTC, [7]=UTC%, [8]=TD booked, [9]=TD completed,
-          [10]=show rate, [11]=lead-to-sale%, [12]=won, [13]=lost,
-          [14]=loss rate, [15]=MB30%, [16]=MB60%, [17]=MB90%
+    Processor reads rows 4+:
+    [0]=market [1]=dealer [2]=RBM [3]=leads [4]=contacted [5]=contact%
+    [6]=UTC [7]=UTC% [8]=TD_booked [9]=TD_completed [10]=show_rate
+    [11]=lead_to_sale% [12]=won [13]=lost [14]=loss_rate
+    [15-17]=MB30%/MB60%/MB90%
+    Network total row has "network" in col[0] or col[1].
     """
     if leads is None or len(leads) == 0:
         for i in range(5):
             ws.append([''] * 20)
         return
 
-    # Header rows
-    ws.append(['Market', 'Dealer', 'RBM', 'Leads', 'Contacted', 'Contact %',
-               'Under Control', 'UTC %', 'TD Booked', 'TD Completed',
-               'Show Rate', 'Lead to Sale %', 'Won', 'Lost', 'Loss Rate',
-               'MB 30%', 'MB 60%', 'MB 90%'])
+    # Header rows (0-3)
+    ws.append(['Market', 'Dealer', 'RBM', 'Leads', 'Contacted', 'Contact%',
+               'UTC', 'UTC%', 'TD Booked', 'TD Completed', 'Show Rate',
+               'Lead-to-Sale%', 'Won', 'Lost', 'Loss Rate', 'MB30%', 'MB60%', 'MB90%'])
     for _ in range(3):
         ws.append([''] * 20)
 
-    # Compute per-dealer KPIs from leads data
-    dealer_kpis = defaultdict(lambda: {
+    # Per-dealer KPIs
+    dk_data = defaultdict(lambda: {
         'market': '', 'leads': 0, 'contacted': 0, 'td_booked': 0,
         'td_completed': 0, 'won': 0, 'lost': 0
     })
 
     for _, lr in leads.iterrows():
-        dealer = _safe_str(lr.get('retailer_name', ''))
+        dealer = _norm_dealer(_safe_str(lr.get('retailer_name', ''))).upper()
         if not dealer:
             continue
-        dealer = _norm_dealer(dealer)
-        dk = dealer.upper()
 
-        dealer_kpis[dk]['leads'] += 1
-        if not dealer_kpis[dk]['market']:
+        dk_data[dealer]['leads'] += 1
+        if not dk_data[dealer]['market']:
             mkt = _safe_str(lr.get('marketing_unit', ''))
             if not mkt:
-                mkt = mkt_map.get(dk, '')
-            dealer_kpis[dk]['market'] = mkt
+                mkt = mkt_map.get(dealer, '')
+            dk_data[dealer]['market'] = mkt
 
         status = _safe_str(lr.get('retailer_status', lr.get('lead_status', ''))).lower()
-        if status in ('contacted', 'won', 'lost', 'qualified'):
-            dealer_kpis[dk]['contacted'] += 1
+        if status in ('contacted', 'won', 'lost', 'qualified', 'under control'):
+            dk_data[dealer]['contacted'] += 1
 
-        # TD booked
-        td_book = lr.get('td_booking_date', None)
-        if td_book is not None:
-            try:
-                if not pd.isna(td_book):
-                    dealer_kpis[dk]['td_booked'] += 1
-            except (TypeError, ValueError):
-                pass
+        td_book = _safe_date(lr.get('td_booking_date', None))
+        if td_book:
+            dk_data[dealer]['td_booked'] += 1
 
-        # TD completed
-        td_flag = _safe_str(lr.get('td_completed_flag', '')).lower()
-        if td_flag in ('yes', 'true', '1', 'completed'):
-            dealer_kpis[dk]['td_completed'] += 1
+        if _safe_str(lr.get('td_completed_flag', '')).lower() in ('yes', 'true', '1', 'completed'):
+            dk_data[dealer]['td_completed'] += 1
 
-        # Won/Lost
         if 'won' in status:
-            dealer_kpis[dk]['won'] += 1
+            dk_data[dealer]['won'] += 1
         elif 'lost' in status:
-            dealer_kpis[dk]['lost'] += 1
+            dk_data[dealer]['lost'] += 1
 
-    # Network totals
-    net = {'leads': 0, 'contacted': 0, 'td_booked': 0, 'td_completed': 0, 'won': 0, 'lost': 0}
-
-    # Write dealer rows (row 4+)
+    # Write data rows (row 4+) and accumulate network total
+    net = {k: 0 for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost')}
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
+
     for region in region_order:
-        dealers = [(dk, kpi) for dk, kpi in dealer_kpis.items() if kpi['market'] == region]
+        dealers = [(dk, kpi) for dk, kpi in dk_data.items() if kpi['market'] == region]
         dealers.sort(key=lambda x: -x[1]['leads'])
 
         for dk, kpi in dealers:
-            leads_n = kpi['leads']
-            contacted = kpi['contacted']
-            td_b = kpi['td_booked']
-            td_c = kpi['td_completed']
-            won = kpi['won']
-            lost = kpi['lost']
-
-            cp = round(contacted / leads_n, 3) if leads_n > 0 else 0
-            show = round(td_c / td_b, 3) if td_b > 0 else 0
-            lts = round(won / leads_n, 3) if leads_n > 0 else 0
-            loss = round(lost / leads_n, 3) if leads_n > 0 else 0
+            n = kpi['leads']
+            c = kpi['contacted']
+            tb = kpi['td_booked']
+            tc = kpi['td_completed']
+            w = kpi['won']
+            lo = kpi['lost']
 
             row = [''] * 20
             row[0] = region
             row[1] = dk.title()
-            row[2] = ''  # RBM
-            row[3] = leads_n
-            row[4] = contacted
-            row[5] = cp
-            row[6] = contacted  # UTC ≈ contacted for now
-            row[7] = cp
-            row[8] = td_b
-            row[9] = td_c
-            row[10] = show
-            row[11] = lts
-            row[12] = won
-            row[13] = lost
-            row[14] = loss
+            row[2] = ''
+            row[3] = n
+            row[4] = c
+            row[5] = round(c / n, 3) if n > 0 else 0
+            row[6] = c
+            row[7] = round(c / n, 3) if n > 0 else 0
+            row[8] = tb
+            row[9] = tc
+            row[10] = round(tc / tb, 3) if tb > 0 else 0
+            row[11] = round(w / n, 3) if n > 0 else 0
+            row[12] = w
+            row[13] = lo
+            row[14] = round(lo / n, 3) if n > 0 else 0
             ws.append(row)
 
             for k in net:
@@ -770,50 +713,49 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_santander_sheets(wb, cache_dir):
-    """Populate Santander Report sheets from cached JSON data.
+    """Populate Santander sheets from cached JSON data.
 
-    Creates: "Santander Report " (monthly pivot), "Santander Report Finance",
-    "Santander Report Lease", "App Report MoM", "App Report Finance",
-    "App Report Lease"
+    The processor reads:
+    - "Santander Report " rows 9+: col[0]=date serial, col[1]=monthly volume
+    - "App Report MoM/Finance/Lease" rows 1+: col[0]=date serial, col[1]=daily volume
     """
     sant_path = os.path.join(cache_dir, 'santander_latest.json')
     if not os.path.exists(sant_path):
         return
 
-    with open(sant_path) as f:
-        sant_data = json.load(f)
+    try:
+        with open(sant_path) as f:
+            sant_data = json.load(f)
+    except Exception:
+        return
 
-    # "Santander Report " - monthly pivot (rows 9+)
-    ws_pivot = wb['Santander Report '] if 'Santander Report ' in wb.sheetnames else None
-    if ws_pivot:
-        # Clear and rebuild
-        # Monthly summary data
+    # "Santander Report " - monthly pivot
+    if 'Santander Report ' in wb.sheetnames:
+        ws = wb['Santander Report ']
+        # Overwrite with data
         monthly = sant_data.get('monthly', sant_data.get('pivot', {}))
-        if isinstance(monthly, dict):
-            # Write 9 header rows
-            for i in range(9):
-                ws_pivot.append([''] * 10)
-            # Monthly rows: col[0]=date serial, col[1]=volume
+        if isinstance(monthly, dict) and monthly:
+            # Skip existing empty rows, write from row 10 (index 9)
+            while ws.max_row < 9:
+                ws.append([''] * 10)
             for date_str, volume in sorted(monthly.items()):
                 serial = _date_to_serial(date_str)
                 if serial:
-                    ws_pivot.append([serial, volume])
+                    ws.append([serial, volume])
 
-    # Daily sheets
+    # Daily data sheets
     for sheet_name, data_key in [
         ('App Report MoM', 'all'),
         ('App Report Finance', 'finance'),
         ('App Report Lease', 'lease'),
     ]:
-        # Create sheet if needed
         if sheet_name not in wb.sheetnames:
             ws = wb.create_sheet(sheet_name)
         else:
             ws = wb[sheet_name]
 
-        ws.append(['Date', 'Volume'])  # Header row
-
-        daily = sant_data.get(data_key, sant_data.get('daily_' + data_key, []))
+        ws.append(['Date', 'Volume'])
+        daily = sant_data.get(data_key, sant_data.get(f'daily_{data_key}', []))
         if isinstance(daily, list):
             for entry in daily:
                 if isinstance(entry, dict):
@@ -821,10 +763,6 @@ def build_santander_sheets(wb, cache_dir):
                     vol = entry.get('volume', entry.get('count', 0))
                     if serial:
                         ws.append([serial, vol])
-                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    serial = _date_to_serial(entry[0])
-                    if serial:
-                        ws.append([serial, entry[1]])
         elif isinstance(daily, dict):
             for date_str, vol in sorted(daily.items()):
                 serial = _date_to_serial(date_str)
@@ -837,16 +775,11 @@ def build_santander_sheets(wb, cache_dir):
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
-    """Write GA4 data in the format the processor expects.
+    """Write GA4 data in processor-expected format.
 
-    Each GA4 sheet has 9 metadata/header rows, then data rows.
-    The data format depends on the report type:
-    - Engagement: col[0]=day_index, col[1]=all, col[2]=organic, col[3]=paid, col[4]=direct
-    - Acquisition: similar to engagement
-    - User Attributes: sections with "Country", "City", etc. headers
-    - Demographics: 4 sections (All/Direct/Organic/Paid) with country data
-    - Tech: sections with "Operating system", "Browser", etc.
-    - Audiences: sections with audience data
+    Engagement/Acquisition: 9 header rows, then col[0]=day_index (days since 2025-01-01),
+    col[1-4]=metric values.
+    Other types: 9 header rows then raw data.
     """
     if ga4_df is None or len(ga4_df) == 0:
         for i in range(10):
@@ -860,7 +793,6 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
     cols = list(ga4_df.columns)
 
     if ga4_type in ('ga4_engagement', 'ga4_acquisition'):
-        # Daily time series: need day_index from start_date (2025-01-01)
         start_date = datetime(2025, 1, 1)
         date_col = None
         for c in cols:
@@ -877,8 +809,6 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
                     day_idx = (dt - start_date).days
                     if day_idx < 0:
                         continue
-
-                    # Get metric columns (take first 4 numeric after date)
                     metrics = []
                     for c in cols:
                         if c != date_col:
@@ -886,27 +816,14 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
                                 metrics.append(float(r[c]) if not pd.isna(r[c]) else 0)
                             except (ValueError, TypeError):
                                 metrics.append(0)
-                    # Pad to 4 metrics
                     while len(metrics) < 4:
                         metrics.append(0)
-
                     ws.append([day_idx] + metrics[:4])
                 except Exception:
                     continue
         else:
-            # No date column — write raw data
             for _, r in ga4_df.iterrows():
                 ws.append([r.get(c, '') for c in cols])
-
-    elif ga4_type == 'ga4_user_attributes':
-        # Sections: Country, City, Language, Gender, Age, Interests
-        # Detect dimension column
-        dim_col = cols[0] if cols else None
-        val_col = cols[1] if len(cols) > 1 else None
-        if dim_col and val_col:
-            for _, r in ga4_df.iterrows():
-                ws.append([r.get(dim_col, ''), r.get(val_col, 0)])
-
     else:
         # Generic: write columns as-is
         for _, r in ga4_df.iterrows():
