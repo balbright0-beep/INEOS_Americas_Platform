@@ -104,6 +104,32 @@ async def upload_master(file: UploadFile = File(...), admin=Depends(require_admi
         try:
             r = await client.post(f"{DASHBOARD_URL}/upload", files={"file": (file.filename, contents, file.content_type)}, follow_redirects=True)
             results["dashboard"] = "ok" if r.status_code < 400 else f"error: {r.status_code}"
+
+            # Wait for Dashboard App to process, then fetch the generated HTML
+            import asyncio
+            await asyncio.sleep(5)  # Wait for processing to start
+            # Poll for completion (check status endpoint)
+            for _ in range(60):  # Wait up to 5 minutes
+                try:
+                    status_r = await client.get(f"{DASHBOARD_URL}/status")
+                    if status_r.status_code == 200:
+                        status_data = status_r.json()
+                        if status_data.get('state') == 'ready':
+                            # Fetch the generated dashboard HTML
+                            dash_r = await client.get(f"{DASHBOARD_URL}/")
+                            if dash_r.status_code == 200 and len(dash_r.text) > 10000:
+                                # Save as the Platform's dashboard
+                                output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'outputs')
+                                os.makedirs(output_dir, exist_ok=True)
+                                with open(os.path.join(output_dir, 'Americas_Daily_Dashboard.html'), 'w', encoding='utf-8') as f:
+                                    f.write(dash_r.text)
+                                results["dashboard_synced"] = True
+                            break
+                        elif status_data.get('state') == 'error':
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
         except Exception as e:
             results["dashboard"] = f"error: {e}"
         try:
