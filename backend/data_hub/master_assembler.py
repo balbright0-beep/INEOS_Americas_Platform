@@ -12,13 +12,25 @@ import numpy as np
 from datetime import datetime
 
 
-def assemble_master_xlsx(cache_dir):
+def assemble_master_xlsx(cache_dir, template_path=None):
     """
     Assemble uploaded source DataFrames into a temporary xlsx file
     with the sheet names the dashboard processor expects.
 
+    All pre-computed sheets (RS, DPD, INV, OBJ, HIST, LK, etc.) are
+    populated from the source data, replicating the Master File's pivot tables.
+
+    Args:
+        cache_dir: Path to cache directory with data/*.parquet files
+        template_path: Optional path to Dashboard HTML template (for OBJ extraction)
+
     Returns: path to temporary xlsx file
     """
+    from data_hub.sheet_builders import (
+        _parse_export_rows, build_retail_sales_sheet, build_dpd_sheet,
+        build_inventory_sheet, build_objectives_sheet, build_historical_sheet,
+        build_lead_kpis_sheet, build_santander_sheets, build_ga4_sheet_formatted,
+    )
 
     def load(name):
         path = os.path.join(cache_dir, 'data', f'{name}.parquet')
@@ -41,6 +53,22 @@ def assemble_master_xlsx(cache_dir):
     incentive_spend = load('incentive_spend')
     qm_leads = load('qm_leads')
 
+    # Auto-detect template path if not provided
+    if template_path is None:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for candidate in [
+            os.path.join(base, 'templates', 'dashboard_template.html'),
+            os.path.join(base, 'outputs', 'Americas_Daily_Dashboard.html'),
+        ]:
+            if os.path.exists(candidate):
+                template_path = candidate
+                break
+
+    # Pre-parse export rows for sheet builders
+    print("  Parsing export rows for sheet builders...")
+    export_rows, mkt_map = _parse_export_rows(sap, handover, sales_order, campaign_codes)
+    print(f"  Parsed {len(export_rows)} export rows, {len(mkt_map)} dealers mapped")
+
     # Create temporary xlsx
     tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
     tmp.close()
@@ -48,59 +76,58 @@ def assemble_master_xlsx(cache_dir):
     wb = openpyxl.Workbook()
 
     # ═══ SHEET: Export ═══
-    # The processor reads this sheet starting from row 2 (0-indexed)
-    # It expects ~50 columns in a specific order
     ws = wb.active
     ws.title = "Export"
     _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
                         campaign_codes, incentive_spend, urban_science)
+    print(f"  Export: {len(sap)} rows")
 
     # ═══ SHEET: Raw Lead Data ═══
     if leads is not None and len(leads) > 0:
         ws_leads = wb.create_sheet("Raw Lead Data")
         _write_leads_sheet(ws_leads, leads)
+        print(f"  Raw Lead Data: {len(leads)} rows")
 
     # ═══ SHEET: RBM Assignments ═══
-    # Write a minimal RBM sheet from the SAP data's dealer/market info
     ws_rbm = wb.create_sheet("RBM Assignments")
     _write_rbm_sheet(ws_rbm, sap)
 
     # ═══ SHEET: Dealer Address ═══
     ws_addr = wb.create_sheet("Dealer Address")
-    # Minimal — processor reads this for map coordinates
     ws_addr.append(["Dealer", "Street", "City", "State", "Zip", "Lat", "Lon"])
 
     # ═══ SHEET: Retail Sales Report ═══
-    # The processor reads rows 6-13 for regional data
-    # We leave this empty — processor will use Export data directly
     ws_rsr = wb.create_sheet("Retail Sales Report")
-    for i in range(15):
-        ws_rsr.append([""] * 20)
+    build_retail_sales_sheet(ws_rsr, export_rows, mkt_map)
+    print("  Retail Sales Report: populated from export data")
 
     # ═══ SHEET: Dealer Performance Dashboard ═══
     ws_dpd = wb.create_sheet("Dealer Performance Dashboard")
-    for i in range(5):
-        ws_dpd.append([""] * 30)
+    build_dpd_sheet(ws_dpd, export_rows, mkt_map)
+    print("  Dealer Performance Dashboard: populated from export data")
 
     # ═══ SHEET: Dealer Inventory Report ═══
     ws_inv = wb.create_sheet("Dealer Inventory Report")
-    for i in range(5):
-        ws_inv.append([""] * 45)
+    build_inventory_sheet(ws_inv, export_rows, mkt_map)
+    print("  Dealer Inventory Report: populated from export data")
 
     # ═══ SHEET: Objectives ═══
     ws_obj = wb.create_sheet("Objectives")
-    for i in range(15):
-        ws_obj.append([""] * 15)
+    obj_data = build_objectives_sheet(ws_obj, template_path)
+    if obj_data:
+        print(f"  Objectives: extracted from template ({len(obj_data)} categories)")
+    else:
+        print("  Objectives: no template data available")
 
     # ═══ SHEET: Historical Sales ═══
     ws_hist = wb.create_sheet("Historical Sales")
-    for i in range(15):
-        ws_hist.append([""] * 15)
+    build_historical_sheet(ws_hist, export_rows, mkt_map)
+    print("  Historical Sales: populated from export data")
 
     # ═══ SHEET: Lead Handling KPIs ═══
     ws_lk = wb.create_sheet("Lead Handling KPIs")
-    for i in range(5):
-        ws_lk.append([""] * 20)
+    build_lead_kpis_sheet(ws_lk, leads, mkt_map)
+    print(f"  Lead Handling KPIs: {'populated' if leads is not None else 'empty'}")
 
     # ═══ SHEET: Matchback Report ═══
     ws_mb = wb.create_sheet("Matchback Report")
@@ -119,9 +146,9 @@ def assemble_master_xlsx(cache_dir):
         ga4_df = load(ga4_name)
         ws_ga4 = wb.create_sheet(sheet_name)
         if ga4_df is not None and len(ga4_df) > 0:
-            _write_ga4_sheet(ws_ga4, ga4_df, ga4_name)
+            build_ga4_sheet_formatted(ws_ga4, ga4_df, ga4_name)
+            print(f"  {sheet_name}: {len(ga4_df)} rows")
         else:
-            # Empty sheet
             for i in range(10):
                 ws_ga4.append([""] * 10)
 
@@ -130,6 +157,8 @@ def assemble_master_xlsx(cache_dir):
         ws_san = wb.create_sheet(name)
         for i in range(5):
             ws_san.append([""] * 30)
+    build_santander_sheets(wb, cache_dir)
+    print("  Santander: populated from cached data")
 
     wb.save(tmp.name)
     wb.close()

@@ -257,7 +257,7 @@ def generate_dashboard_from_sources(cache_dir, template_path, output_path):
 
     # Step 1: Assemble xlsx from cached parquet files
     print("\nStep 1: Assembling workbook from source data...")
-    xlsx_path = assemble_master_xlsx(cache_dir)
+    xlsx_path = assemble_master_xlsx(cache_dir, template_path=template_path)
 
     try:
         # Step 2: Run the original processor against the assembled xlsx
