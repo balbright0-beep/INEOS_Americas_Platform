@@ -237,8 +237,14 @@ def get_data_sources(admin=Depends(require_admin), db: Session = Depends(get_db)
 
     # Also check GA4 from last_ga4_pull
     ga4_state = db.query(AppState).filter(AppState.key == "last_ga4_pull").first()
+    ga4_rows = db.query(AppState).filter(AppState.key == "source_ga4_rows").first()
     if ga4_state and ga4_state.value:
         sources['ga4']['last_upload'] = ga4_state.value
+        if ga4_rows and ga4_rows.value:
+            try:
+                sources['ga4']['row_count'] = int(ga4_rows.value)
+            except:
+                pass
         try:
             age = (now - datetime.fromisoformat(ga4_state.value)).total_seconds() / 3600
             sources['ga4']['freshness'] = 'green' if age < 192 else 'yellow' if age < 360 else 'red'
@@ -367,13 +373,21 @@ async def pull_ga4(days: int = 90, admin=Depends(require_admin), db: Session = D
         os.makedirs(cache_dir, exist_ok=True)
         meta = save_reports_to_cache(results, cache_dir)
         # Store last GA4 pull timestamp
+        total_rows = sum(v.get('row_count', 0) for v in meta.values())
+        # Update last pull timestamp
         state = db.query(AppState).filter(AppState.key == "last_ga4_pull").first()
         if not state:
             state = AppState(key="last_ga4_pull")
             db.add(state)
         state.value = datetime.utcnow().isoformat()
+        # Update row count
+        rows_state = db.query(AppState).filter(AppState.key == "source_ga4_rows").first()
+        if not rows_state:
+            rows_state = AppState(key="source_ga4_rows")
+            db.add(rows_state)
+        rows_state.value = str(total_rows)
         db.commit()
-        audit(db, "pull_ga4", admin.username, f"Pulled {days}d GA4 data: {sum(v.get('row_count',0) for v in meta.values())} total rows")
+        audit(db, "pull_ga4", admin.username, f"Pulled {days}d GA4 data: {total_rows} total rows")
         return {"status": "success", "reports": {k: {"rows": v.get("row_count", 0)} for k, v in meta.items()}}
     except ImportError as ie:
         return {"status": "error", "error": f"GA4 API libraries not installed: {ie}"}
