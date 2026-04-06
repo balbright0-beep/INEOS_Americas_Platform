@@ -27,7 +27,7 @@ const API={
   get(p){return this.req(p)},
   post(p,d){return this.req(p,{method:'POST',body:JSON.stringify(d)})},
   del(p){return this.req(p,{method:'DELETE'})},
-  async uploadFile(p,file){const fd=new FormData();fd.append('file',file);const h={};if(this.token)h['Authorization']='Bearer '+this.token;const r=await fetch(p,{method:'POST',body:fd,headers:h});return r.json()},
+  async uploadFile(p,file){const fd=new FormData();fd.append('file',file);const h={};if(this.token)h['Authorization']='Bearer '+this.token;const r=await fetch(p,{method:'POST',body:fd,headers:h});const text=await r.text();try{return JSON.parse(text)}catch(e){throw new Error(r.ok?'Server returned non-JSON response':(`Upload failed (${r.status}): ${text.substring(0,100)}`));}},
   setToken(t){this.token=t;sessionStorage.setItem('pt',t)},
   logout(){this.token=null;sessionStorage.removeItem('pt');sessionStorage.removeItem('pu');location.reload()},
 };
