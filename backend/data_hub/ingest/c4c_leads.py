@@ -1,5 +1,6 @@
 """C4C Leads Created in Marketing ingest handler."""
 import pandas as pd
+import openpyxl
 
 LEADS_COLUMNS = {
     'Lead ID': 'lead_id',
@@ -37,31 +38,41 @@ LEADS_COLUMNS = {
 
 
 def ingest_c4c_leads(filepath):
-    """Parse C4C Leads file. Tries multiple approaches to find the data."""
-    # Try 1: Read with different skiprows to find the header row
-    for skip in [0, 1, 2, 3, 4, 5]:
-        try:
-            df = pd.read_excel(filepath, skiprows=skip, engine='openpyxl')
-            # Check if we found real column names (not metadata)
-            cols_str = ' '.join(str(c) for c in df.columns)
-            if 'Lead ID' in cols_str or 'lead' in cols_str.lower():
-                return _process_leads(df)
-            # Check if any row contains Lead ID
-            for i in range(min(5, len(df))):
-                row_str = ' '.join(str(v) for v in df.iloc[i].values if pd.notna(v))
-                if 'Lead ID' in row_str:
-                    # This row is the header — re-read with correct skiprows
-                    df2 = pd.read_excel(filepath, skiprows=skip + i + 1, engine='openpyxl')
-                    # Use this row as headers
-                    headers = [str(v).strip() for v in df.iloc[i].values if pd.notna(v)]
-                    if len(headers) >= len(df2.columns):
-                        df2.columns = headers[:len(df2.columns)]
-                    return _process_leads(df2)
-        except Exception:
-            continue
+    """Parse C4C Leads file using raw openpyxl to avoid pandas parsing errors."""
+    # Read directly with openpyxl to bypass pandas cell type conversion issues
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    ws = wb.active
 
-    # Try 2: Just read everything and hope for the best
-    df = pd.read_excel(filepath, engine='openpyxl')
+    # Read all rows as strings to avoid type conversion errors
+    all_rows = []
+    for row in ws.iter_rows(values_only=True):
+        all_rows.append([str(v).strip() if v is not None else '' for v in row])
+    wb.close()
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    # Find the header row (contains 'Lead ID')
+    header_idx = None
+    for i, row in enumerate(all_rows[:10]):
+        row_str = ' '.join(row)
+        if 'Lead ID' in row_str:
+            header_idx = i
+            break
+
+    if header_idx is None:
+        # No header found — use first row as header
+        header_idx = 0
+
+    headers = all_rows[header_idx]
+    data_rows = all_rows[header_idx + 1:]
+
+    # Filter out empty rows
+    data_rows = [r for r in data_rows if any(v for v in r)]
+
+    # Create DataFrame
+    df = pd.DataFrame(data_rows, columns=headers[:len(data_rows[0])] if data_rows else headers)
+
     return _process_leads(df)
 
 
@@ -76,7 +87,7 @@ def _process_leads(df):
                 break
     df = df.rename(columns=rename)
 
-    # Parse date columns safely (don't force conversion that could fail)
+    # Parse date columns safely
     date_cols = [
         'qualified_date', 'closed_date', 'start_date', 'end_date', 'created_on',
         'td_requested', 'first_contact', 'first_status_change',
@@ -86,8 +97,9 @@ def _process_leads(df):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors='coerce')
 
-    # Drop rows without lead_id
+    # Drop rows without lead_id or where lead_id is empty
     if 'lead_id' in df.columns:
-        df = df.dropna(subset=['lead_id'])
+        df = df[df['lead_id'].astype(str).str.strip() != '']
+        df = df[df['lead_id'].astype(str) != 'nan']
 
     return df
