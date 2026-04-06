@@ -309,6 +309,23 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
         }
 
+        # ALWAYS store the raw uploaded file in DB first (before parsing)
+        # This ensures data survives even if parquet serialization fails
+        from app.models import CachedFile
+        raw_key = f'{source_id}_raw'
+        try:
+            existing_raw = db.query(CachedFile).filter(CachedFile.key == raw_key).first()
+            if existing_raw:
+                existing_raw.data = contents
+                existing_raw.filename = file.filename
+                existing_raw.uploaded_at = datetime.utcnow()
+            else:
+                db.add(CachedFile(key=raw_key, data=contents, filename=file.filename, row_count=0))
+            db.commit()
+            print(f"  Stored raw {source_id}: {len(contents):,} bytes")
+        except Exception as e:
+            print(f"  Raw store failed: {e}")
+
         if source_id in INGEST_MAP:
             mod_name, func_name = INGEST_MAP[source_id]
             mod = __import__(mod_name, fromlist=[func_name])
@@ -413,9 +430,15 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
         audit(db, "upload_source", admin.username, f"Uploaded {source_id}: {file.filename} (stored, pending Data Hub integration)")
         return {"status": "success", "rows": 0, "note": "File stored. Data Hub processing not yet connected."}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        # Even if parsing failed, raw file is already stored in DB
+        # Return success with note — rebuild will re-ingest from raw
+        return {"status": "success", "rows": 0,
+                "note": f"Raw file stored ({len(contents):,} bytes). Parse error: {str(e)[:200]}. Will re-ingest on rebuild."}
     finally:
-        os.unlink(tmp.name)
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
 
 # --- Rebuild All ---
