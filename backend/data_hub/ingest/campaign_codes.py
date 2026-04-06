@@ -31,11 +31,20 @@ def _parse_xlsx_raw(filepath):
                 texts = si.findall('.//s:t', ns)
                 shared_strings.append(''.join(t.text or '' for t in texts))
 
+        # Find the sheet with the most rows (the detail data, not summary)
         sheet_path = None
+        max_rows = 0
+        ns_check = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
         for name in sorted(z.namelist()):
             if name.startswith('xl/worksheets/sheet') and name.endswith('.xml'):
-                sheet_path = name
-                break
+                try:
+                    root_check = ET.fromstring(z.read(name))
+                    row_count = len(root_check.findall('.//s:sheetData/s:row', ns_check))
+                    if row_count > max_rows:
+                        max_rows = row_count
+                        sheet_path = name
+                except:
+                    pass
 
         if not sheet_path:
             raise RuntimeError("No worksheet found")
