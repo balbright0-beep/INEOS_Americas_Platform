@@ -286,7 +286,11 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache', 'data')
             os.makedirs(cache_dir, exist_ok=True)
             if hasattr(result_data, 'to_parquet'):
-                result_data.to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
+                try:
+                    result_data.to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
+                except Exception:
+                    # Fallback: convert all columns to string for mixed-type DataFrames
+                    result_data.astype(str).to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
             else:
                 import json
                 with open(os.path.join(cache_dir, f'{source_id}.json'), 'w') as f:
