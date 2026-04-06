@@ -1,5 +1,7 @@
 """Shared utilities for INEOS Data Hub."""
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from math import radians, cos, sin, asin, sqrt
 
@@ -209,3 +211,133 @@ def safe_str(x):
 def pct(val):
     """Format as percentage string: 0.75 -> '75.0'"""
     return f"{safe_float(val) * 100:.1f}"
+
+
+# ═══════════════════════════════════════════════════
+# Raw XLSX XML Parser (handles inlineStr, shared strings, etc.)
+# ═══════════════════════════════════════════════════
+
+def parse_xlsx_raw(filepath, find_header_fn=None):
+    """
+    Parse xlsx by reading XML directly from the ZIP archive.
+    Handles: shared strings (type=s), inline strings (type=inlineStr),
+    regular values, and booleans.
+    Returns a pandas DataFrame.
+
+    find_header_fn: optional function(row_str) -> bool to identify header row
+    """
+    import pandas as pd
+
+    with zipfile.ZipFile(filepath) as z:
+        # Read shared strings
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            ss_xml = z.read('xl/sharedStrings.xml')
+            ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            root = ET.fromstring(ss_xml)
+            for si in root.findall('.//s:si', ns):
+                texts = si.findall('.//s:t', ns)
+                shared_strings.append(''.join(t.text or '' for t in texts))
+
+        # Find largest sheet
+        sheet_path = None
+        max_rows = 0
+        ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        for name in sorted(z.namelist()):
+            if name.startswith('xl/worksheets/sheet') and name.endswith('.xml'):
+                try:
+                    root_check = ET.fromstring(z.read(name))
+                    row_count = len(root_check.findall('.//s:sheetData/s:row', ns))
+                    if row_count > max_rows:
+                        max_rows = row_count
+                        sheet_path = name
+                except:
+                    pass
+
+        if not sheet_path:
+            raise RuntimeError("No worksheet found in xlsx")
+
+        sheet_xml = z.read(sheet_path)
+        root = ET.fromstring(sheet_xml)
+
+        rows = []
+        for row_el in root.findall('.//s:sheetData/s:row', ns):
+            row_values = []
+            for idx, cell in enumerate(row_el.findall('s:c', ns)):
+                ref = cell.get('r', '')
+                cell_type = cell.get('t', '')
+
+                # Extract value based on cell type
+                val = ''
+                if cell_type == 'inlineStr':
+                    is_el = cell.find('s:is', ns)
+                    if is_el is not None:
+                        t_el = is_el.find('s:t', ns)
+                        if t_el is not None and t_el.text:
+                            val = t_el.text
+                elif cell_type == 's':
+                    val_el = cell.find('s:v', ns)
+                    if val_el is not None and val_el.text:
+                        try:
+                            val = shared_strings[int(val_el.text)]
+                        except (ValueError, IndexError):
+                            val = val_el.text
+                else:
+                    val_el = cell.find('s:v', ns)
+                    val = val_el.text if val_el is not None else ''
+
+                row_values.append(val)
+
+            rows.append(row_values)
+
+    if not rows:
+        return pd.DataFrame()
+
+    # Normalize row lengths (pad shorter rows)
+    max_cols = max(len(r) for r in rows) if rows else 0
+    data = [r + [''] * (max_cols - len(r)) for r in rows]
+
+    # Find header row — prefer rows with many non-empty cells that contain keywords
+    header_idx = 0
+    best_score = 0
+    for i, row in enumerate(data[:15]):
+        non_empty = sum(1 for v in row if str(v).strip())
+        if non_empty < 3:
+            continue  # Skip metadata rows with few cells
+        row_str = ' '.join(str(v) for v in row)
+        score = non_empty  # More columns = more likely to be header
+        if find_header_fn and find_header_fn(row_str):
+            score += 100
+        # Bonus for common header keywords
+        for kw in ['VIN', 'Vehicle', 'Lead ID', 'Campaign', 'Order', 'Dealer', 'Date', 'Status', 'Channel']:
+            if kw in row_str:
+                score += 10
+        if score > best_score:
+            best_score = score
+            header_idx = i
+
+    headers = data[header_idx]
+    data_rows = data[header_idx + 1:]
+
+    # Clean headers
+    seen = {}
+    clean_headers = []
+    for i, h in enumerate(headers):
+        h = h.strip() if h else ''
+        if not h:
+            h = f'_col_{i}'
+        if h in seen:
+            seen[h] += 1
+            h = f'{h}.{seen[h]}'
+        else:
+            seen[h] = 0
+        clean_headers.append(h)
+
+    data_rows = [r[:len(clean_headers)] for r in data_rows]
+    df = pd.DataFrame(data_rows, columns=clean_headers)
+    df = df[[c for c in df.columns if not c.startswith('_col_')]]
+
+    # Filter out completely empty rows
+    df = df[df.astype(str).apply(lambda r: r.str.strip().str.len().sum() > 0, axis=1)]
+
+    return df
