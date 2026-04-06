@@ -66,7 +66,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # Pre-parse export rows for sheet builders
     print("  Parsing export rows for sheet builders...")
-    export_rows, mkt_map = _parse_export_rows(sap, handover, sales_order, campaign_codes)
+    export_rows, mkt_map = _parse_export_rows(sap, handover, sales_order, campaign_codes, template_path)
     print(f"  Parsed {len(export_rows)} export rows, {len(mkt_map)} dealers mapped")
 
     # Create temporary xlsx
@@ -90,7 +90,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: RBM Assignments ═══
     ws_rbm = wb.create_sheet("RBM Assignments")
-    _write_rbm_sheet(ws_rbm, sap)
+    _write_rbm_sheet(ws_rbm, sap, mkt_map)
 
     # ═══ SHEET: Dealer Address ═══
     ws_addr = wb.create_sheet("Dealer Address")
@@ -510,23 +510,41 @@ def _write_leads_sheet(ws, leads):
         ws.append(row)
 
 
-def _write_rbm_sheet(ws, sap):
-    """Write minimal RBM Assignments from SAP data."""
-    # Processor reads from row 5+, dealer=col3, market=col5
+def _write_rbm_sheet(ws, sap, mkt_map):
+    """Write RBM Assignments using the dealer→market mapping.
+
+    The processor reads from row 5+, dealer=col3, market=col5.
+    We use mkt_map (extracted from template) instead of SAP's market_area
+    which is just "AMERICAS" for all dealers.
+    """
     for i in range(5):
         ws.append([""] * 10)
 
-    # Extract unique dealers with their market areas if available
-    if 'market_area' in sap.columns and 'customer_name' in sap.columns:
-        dealers = sap[['customer_name', 'market_area']].drop_duplicates()
-        for _, r in dealers.iterrows():
-            name = str(r['customer_name']).strip()
-            market = str(r['market_area']).strip()
-            if name and market:
+    # Write dealer→market assignments from our map
+    written = set()
+    if 'customer_name' in sap.columns:
+        for _, r in sap.iterrows():
+            raw_name = str(r['customer_name']).strip()
+            norm = raw_name.replace(' INEOS Grenadier', '').replace(' INEOS', '').replace(' GRENADIER', '').strip()
+            norm = ' '.join(w for w in norm.split() if w.upper() != 'GRENADIER').strip()
+            upper = norm.upper()
+
+            if upper in written:
+                continue
+
+            market = mkt_map.get(upper, '')
+            if not market:
+                # Fuzzy match
+                for k, v in mkt_map.items():
+                    if upper in k or k in upper:
+                        market = v
+                        break
+            if market:
                 row = [""] * 10
-                row[3] = name
+                row[3] = norm
                 row[5] = market
                 ws.append(row)
+                written.add(upper)
 
 
 def _write_ga4_sheet(ws, df, ga4_type):

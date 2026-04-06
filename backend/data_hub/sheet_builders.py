@@ -104,21 +104,99 @@ def _safe_date(val):
         return None
 
 
-def _build_market_map(sap):
-    """Build dealer→market mapping from SAP data."""
+def _build_market_map(sap, template_path=None):
+    """Build dealer→market mapping.
+
+    The SAP export has market_area="AMERICAS" for all vehicles — useless for
+    regional breakdown. The real mapping comes from:
+    1. The Dashboard template's existing DPD/INV constants (from last Master File)
+    2. Hardcoded dealer→market extras (same as the processor)
+    3. SAP data as last resort
+
+    Returns dict of dealer_name_upper → market region.
+    """
     mkt_map = {}
+
+    # 1. Extract from template HTML (most complete source)
+    if template_path and os.path.exists(template_path):
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                html = f.read()
+            # Extract from DPD constant
+            m = re.search(r'const\s+DPD\s*=\s*(\[.*?\]);', html, re.DOTALL)
+            if m:
+                dpd = json.loads(m.group(1))
+                for row in dpd:
+                    d = _safe_str(row.get('d', '')).upper()
+                    mk = _safe_str(row.get('m', ''))
+                    if d and mk and mk != 'TOTAL':
+                        mkt_map[d] = mk
+            # Extract from INV constant
+            m = re.search(r'const\s+INV\s*=\s*(\[.*?\]);', html, re.DOTALL)
+            if m:
+                inv = json.loads(m.group(1))
+                for row in inv:
+                    d = _safe_str(row.get('n', '')).upper()
+                    mk = _safe_str(row.get('m', ''))
+                    if d and mk:
+                        mkt_map[d] = mk
+            # Extract from MTD_DLR constant
+            m = re.search(r'const\s+MTD_DLR\s*=\s*(\[.*?\]);', html, re.DOTALL)
+            if m:
+                mtd = json.loads(m.group(1))
+                for row in mtd:
+                    d = _safe_str(row.get('d', '')).upper()
+                    mk = _safe_str(row.get('m', ''))
+                    if d and mk:
+                        mkt_map[d] = mk
+            if mkt_map:
+                print(f"  [Market Map] Extracted {len(mkt_map)} dealer mappings from template")
+        except Exception as e:
+            print(f"  [Market Map] Template extraction failed: {e}")
+
+    # 2. Hardcoded extras (same as processor's build_mkt_map extras)
+    extras = {
+        "MOSSY": "Central", "MOSSY TX": "Central", "MOSSY TEXAS": "Central",
+        "MOSSY SD": "Western", "MOSSY SAN DIEGO": "Western",
+        "SEWELL": "Central", "SEWELL SA": "Central", "SEWELL SAN ANTONIO": "Central",
+        "SEWELL DALLAS": "Central",
+        "FELDMAN": "Northeast", "FREEHOLD": "Northeast",
+        "RED NOLAND": "Western", "KNAUZ": "Central",
+        "MILEONE": "Northeast", "NORTH SHORE": "Northeast",
+        "KO": "Northeast", "CROWN DUBLIN": "Northeast",
+        "CURRY": "Northeast", "RDS": "Northeast",
+        "WARNER": "Southeast", "HOLMAN": "Southeast",
+        "REGAL": "Southeast", "CROWN": "Southeast",
+        "VICTORY": "Southeast", "CHARLOTTE": "Southeast",
+        "HENDRICK": "Southeast", "GREENSBORO": "Southeast",
+        "ORLANDO": "Southeast",
+        "RTGT": "Western", "ROSEVILLE": "Western",
+        "LYLE PEARSON": "Western", "RENO": "Western",
+        "LUTHER": "Central",
+        "DILAWRI": "Canada", "WEISSACH": "Canada", "CALGARY": "Canada",
+        "MONTREAL": "Canada", "UPTOWN TORONTO": "Canada",
+        "HERRERA": "Mexico",
+        "HERRERA PREMIUM DE MEXICO SA DE CV": "Mexico",
+        "INEOS CA STOCK": "Canada",
+    }
+    for k, v in extras.items():
+        if k not in mkt_map:
+            mkt_map[k] = v
+
+    # 3. SAP data as fallback (skip "AMERICAS" - it's useless)
     for col in ('market_area', 'region_group'):
         if col in sap.columns:
             for _, r in sap.iterrows():
                 dealer = _norm_dealer(r.get('customer_name', '')).upper()
                 mkt = _safe_str(r.get(col, ''))
-                if dealer and mkt:
+                if dealer and mkt and mkt.upper() != 'AMERICAS' and dealer not in mkt_map:
                     mkt_map[dealer] = mkt
-            break
+
+    print(f"  [Market Map] Total: {len(mkt_map)} dealer→market mappings")
     return mkt_map
 
 
-def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None):
+def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None, template_path=None):
     """Parse SAP export into enriched row dicts matching the Master File's Export sheet."""
     rows = []
 
@@ -144,7 +222,7 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
         if 'campaign_type' in campaign_codes.columns:
             cvp_vins = set(campaign_codes[campaign_codes['campaign_type'] == 'CVP']['vin'].dropna().astype(str).str.upper())
 
-    mkt_map = _build_market_map(sap)
+    mkt_map = _build_market_map(sap, template_path)
 
     for _, r in sap.iterrows():
         vin = _safe_str(r.get('vin', '')).upper()
@@ -171,13 +249,21 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             ho_date = _safe_date(r.get('invoice_date', None))
 
         # Market
-        market = ''
-        for col in ('market_area', 'region_group'):
-            market = _safe_str(r.get(col, ''))
-            if market:
-                break
+        # Use mkt_map (from template/hardcoded) FIRST, not SAP's market_area which is "AMERICAS"
+        market = mkt_map.get(dealer.upper(), '')
         if not market:
-            market = mkt_map.get(dealer.upper(), '')
+            # Fuzzy match: check if dealer name contains or is contained in any key
+            for k, v in mkt_map.items():
+                if dealer.upper() in k or k in dealer.upper():
+                    market = v
+                    break
+        if not market:
+            # Last resort: SAP columns (skip "AMERICAS")
+            for col in ('market_area', 'region_group'):
+                val = _safe_str(r.get(col, ''))
+                if val and val.upper() != 'AMERICAS':
+                    market = val
+                    break
 
         rows.append({
             'vin': vin,
