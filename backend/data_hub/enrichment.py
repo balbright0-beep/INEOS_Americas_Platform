@@ -20,7 +20,13 @@ def enrich(sap_df, handover_df=None, stock_pipeline_df=None,
     df = sap_df.copy()
     today = pd.Timestamp.now().normalize()
 
-    conn = sqlite3.connect(ref_db_path)
+    # Open reference DB if it exists, otherwise skip DB-dependent enrichments
+    import os
+    conn = None
+    if os.path.exists(ref_db_path):
+        conn = sqlite3.connect(ref_db_path)
+    else:
+        print(f"  Warning: Reference DB not found at {ref_db_path}, skipping DB-dependent enrichments")
 
     # ═══ 1. HANDOVER DATE + REV REC (cols 51, 55) ═══
     if handover_df is not None and len(handover_df) > 0:
@@ -204,5 +210,6 @@ def enrich(sap_df, handover_df=None, stock_pipeline_df=None,
             lambda r: haversine_miles(r['retailer_lat'], r['retailer_lon'],
                                      r['customer_lat'], r['customer_lon']), axis=1)
 
-    conn.close()
+    if conn:
+        conn.close()
     return df
