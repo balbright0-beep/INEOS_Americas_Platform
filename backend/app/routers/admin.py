@@ -196,6 +196,8 @@ def get_data_sources(admin=Depends(require_admin), db: Session = Depends(get_db)
         'santander': ('Santander Daily Report', 'Daily'),
         'sales_order': ('Sales Order Report', 'Daily'),
         'qm_leads': ('QM Leads (ALL LEADS)', 'Daily'),
+        'incentive_spend': ('Incentive & Subvention Spend', 'Monthly'),
+        'campaign_codes': ('Campaign Code Extract', 'Monthly'),
         'urban_science': ('Urban Science Extract', 'Monthly'),
         'ga4': ('Google Analytics (GA4)', 'Weekly'),
     }
@@ -270,6 +272,8 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             'santander': ('data_hub.ingest.santander', 'ingest_santander'),
             'sales_order': ('data_hub.ingest.sales_order', 'ingest_sales_order'),
             'qm_leads': ('data_hub.ingest.qm_leads', 'ingest_qm_leads'),
+            'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
+            'campaign_codes': ('data_hub.ingest.campaign_codes', 'ingest_campaign_codes'),
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
         }
 

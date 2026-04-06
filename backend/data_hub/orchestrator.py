@@ -177,10 +177,16 @@ class DataHub:
         stock_pipeline = self._load_data('stock_pipeline')
         leads = self._load_data('leads')
         urban_science = self._load_data('urban_science')
+        sales_order = self._load_data('sales_order')
+        campaign_codes = self._load_data('campaign_codes')
+        incentive_spend = self._load_data('incentive_spend')
+        qm_leads = self._load_data('qm_leads')
 
         # Enrich
         try:
-            enriched = enrich(sap, handover, stock_pipeline, urban_science, self.ref_db_path)
+            enriched = enrich(sap, handover, stock_pipeline, urban_science,
+                            sales_order, campaign_codes, incentive_spend, qm_leads,
+                            self.ref_db_path)
         except Exception as e:
             return {'error': f'Enrichment failed: {e}'}
 
