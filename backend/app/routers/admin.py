@@ -316,76 +316,77 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             result_data = ingest_fn(tmp.name)
 
             if isinstance(result_data, dict):
-                # Santander returns dict of lists
                 row_count = sum(len(v) for v in result_data.values() if isinstance(v, list))
             else:
-                # DataFrame
                 row_count = len(result_data)
 
-            # Cache the data on disk AND persist to PostgreSQL
+            # Cache processed data on disk
             cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache', 'data')
             os.makedirs(cache_dir, exist_ok=True)
+
             if hasattr(result_data, 'to_parquet'):
                 parquet_path = os.path.join(cache_dir, f'{source_id}.parquet')
                 try:
                     result_data.to_parquet(parquet_path, index=False)
-                except Exception as pe1:
-                    print(f"  Parquet save failed for {source_id}: {pe1}")
-                    try:
-                        # Convert problematic columns to string
-                        for col in result_data.columns:
-                            if result_data[col].dtype == 'object':
-                                result_data[col] = result_data[col].astype(str)
-                        result_data.to_parquet(parquet_path, index=False)
-                    except Exception as pe2:
-                        print(f"  Parquet string fallback also failed: {pe2}")
-                        # Last resort: pickle
-                        import pickle
-                        pickle_path = parquet_path.replace('.parquet', '.pkl')
-                        with open(pickle_path, 'wb') as pf:
-                            pickle.dump(result_data, pf)
-
-                # Verify the file was written correctly
-                written_size = os.path.getsize(parquet_path) if os.path.exists(parquet_path) else 0
-                if written_size < 1000 and row_count > 10:
-                    print(f"  WARNING: {source_id} parquet is suspiciously small ({written_size} bytes for {row_count} rows)")
-
-                # Persist to PostgreSQL (survives Render deploys)
-                try:
-                    from app.models import CachedFile
-                    with open(parquet_path, 'rb') as pf:
-                        parquet_bytes = pf.read()
-                    existing = db.query(CachedFile).filter(CachedFile.key == source_id).first()
-                    if existing:
-                        existing.data = parquet_bytes
-                        existing.row_count = row_count
-                        existing.filename = file.filename
-                        existing.uploaded_at = datetime.utcnow()
-                    else:
-                        db.add(CachedFile(key=source_id, data=parquet_bytes, row_count=row_count, filename=file.filename))
-                    db.commit()
-                except Exception as e:
-                    print(f"  DB persist warning for {source_id}: {e}")
+                    written = os.path.getsize(parquet_path)
+                    if written < 1000 and row_count > 10:
+                        raise ValueError(f"Parquet suspiciously small: {written} bytes for {row_count} rows")
+                except Exception as pe:
+                    print(f"  Parquet failed for {source_id}: {pe}, using CSV fallback")
+                    csv_path = parquet_path.replace('.parquet', '.csv')
+                    result_data.to_csv(csv_path, index=False)
+                    # Convert CSV back to parquet via fresh read
+                    import pandas as _pd
+                    df_fresh = _pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+                    df_fresh.to_parquet(parquet_path, index=False)
+                    os.unlink(csv_path)
             else:
-                import json
+                import json as _json
                 json_path = os.path.join(cache_dir, f'{source_id}.json')
-                json_str = json.dumps(result_data, default=str)
-                with open(json_path, 'w') as f:
-                    f.write(json_str)
-                # Persist JSON to DB too
-                try:
-                    from app.models import CachedFile
-                    existing = db.query(CachedFile).filter(CachedFile.key == source_id).first()
-                    if existing:
-                        existing.data = json_str.encode('utf-8')
-                        existing.row_count = row_count
-                        existing.filename = file.filename
-                        existing.uploaded_at = datetime.utcnow()
+                json_str = _json.dumps(result_data, default=str)
+                with open(json_path, 'w') as jf:
+                    jf.write(json_str)
+
+            # Persist ORIGINAL uploaded file to DB (not processed parquet)
+            # This avoids all serialization issues — we re-ingest on restore
+            from app.models import CachedFile
+            try:
+                # Store the original file bytes with a _raw suffix
+                raw_key = f'{source_id}_raw'
+                existing_raw = db.query(CachedFile).filter(CachedFile.key == raw_key).first()
+                if existing_raw:
+                    existing_raw.data = contents  # original uploaded file bytes
+                    existing_raw.row_count = row_count
+                    existing_raw.filename = file.filename
+                    existing_raw.uploaded_at = datetime.utcnow()
+                else:
+                    db.add(CachedFile(key=raw_key, data=contents, row_count=row_count, filename=file.filename))
+
+                # Also store processed parquet/json for fast restore
+                processed_path = os.path.join(cache_dir, f'{source_id}.parquet')
+                if not os.path.exists(processed_path):
+                    processed_path = os.path.join(cache_dir, f'{source_id}.json')
+                if os.path.exists(processed_path):
+                    with open(processed_path, 'rb') as pf:
+                        processed_bytes = pf.read()
+                    processed_size = len(processed_bytes)
+                    # Only store processed if it's not empty/corrupt
+                    if processed_size > 1000 or row_count <= 10:
+                        existing = db.query(CachedFile).filter(CachedFile.key == source_id).first()
+                        if existing:
+                            existing.data = processed_bytes
+                            existing.row_count = row_count
+                            existing.filename = file.filename
+                            existing.uploaded_at = datetime.utcnow()
+                        else:
+                            db.add(CachedFile(key=source_id, data=processed_bytes, row_count=row_count, filename=file.filename))
                     else:
-                        db.add(CachedFile(key=source_id, data=json_str.encode('utf-8'), row_count=row_count, filename=file.filename))
-                    db.commit()
-                except Exception as e:
-                    print(f"  DB persist warning for {source_id}: {e}")
+                        print(f"  Skipping corrupt parquet for {source_id} ({processed_size} bytes), raw file stored instead")
+
+                db.commit()
+                print(f"  Persisted {source_id}: raw={len(contents)} bytes, rows={row_count}")
+            except Exception as e:
+                print(f"  DB persist error for {source_id}: {e}")
         else:
             return {"status": "error", "error": f"Unknown source: {source_id}"}
 

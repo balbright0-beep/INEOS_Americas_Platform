@@ -126,63 +126,131 @@ class DataHub:
         return False
 
     def restore_all_from_db(self):
-        """Restore all cached files from PostgreSQL to disk."""
+        """Restore all cached files from PostgreSQL to disk.
+
+        Strategy: For each source, try processed parquet first. If it's
+        corrupt (< 1KB for large datasets), fall back to raw file + re-ingest.
+        """
+        INGEST_MAP = {
+            'sap_export': ('data_hub.ingest.sap_export', 'ingest_sap_export'),
+            'sap_handover': ('data_hub.ingest.sap_handover', 'ingest_handover'),
+            'stock_pipeline': ('data_hub.ingest.stock_pipeline', 'ingest_stock_pipeline'),
+            'c4c_leads': ('data_hub.ingest.c4c_leads', 'ingest_c4c_leads'),
+            'sales_order': ('data_hub.ingest.sales_order', 'ingest_sales_order'),
+            'qm_leads': ('data_hub.ingest.qm_leads', 'ingest_qm_leads'),
+            'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
+            'campaign_codes': ('data_hub.ingest.campaign_codes', 'ingest_campaign_codes'),
+            'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
+        }
+        ALIASES = {'c4c_leads': 'leads', 'sap_handover': 'handover'}
+
         try:
             from app.database import SessionLocal
             from app.models import CachedFile
             db = SessionLocal()
             try:
-                cached_files = db.query(CachedFile).all()
+                cached_files = {cf.key: cf for cf in db.query(CachedFile).all()}
                 count = 0
-                for cf in cached_files:
+                data_dir = os.path.join(self.cache_dir, 'data')
+                os.makedirs(data_dir, exist_ok=True)
+
+                for key, cf in cached_files.items():
                     if not cf.data:
                         continue
-                    if cf.key == '_santander_json':
-                        # Restore Santander JSON
+
+                    # Skip raw files (handled below)
+                    if key.endswith('_raw'):
+                        continue
+
+                    if key in ('_santander_json', 'santander'):
                         sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
-                        os.makedirs(os.path.dirname(sant_path), exist_ok=True)
                         with open(sant_path, 'wb') as f:
                             f.write(cf.data)
-                        print(f"  Restored santander JSON from DB ({len(cf.data):,} bytes)")
-                    elif cf.key == '_upload_status':
-                        # Restore upload status
+                        with open(os.path.join(data_dir, 'santander.json'), 'wb') as f:
+                            f.write(cf.data)
+                        print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
+                        count += 1
+                        continue
+
+                    if key == '_upload_status':
                         with open(self.status_path, 'wb') as f:
                             f.write(cf.data)
                         self.upload_status = self._load_status()
-                        print(f"  Restored upload_status from DB")
-                    elif cf.key == 'santander':
-                        # Restore santander JSON (stored by upload-source endpoint)
-                        sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
-                        os.makedirs(os.path.dirname(sant_path), exist_ok=True)
-                        with open(sant_path, 'wb') as f:
-                            f.write(cf.data)
-                        # Also save as santander.json for compatibility
-                        with open(os.path.join(self.cache_dir, 'data', 'santander.json'), 'wb') as f:
-                            f.write(cf.data)
-                        print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
-                    else:
-                        # Restore parquet file
-                        path = os.path.join(self.cache_dir, 'data', f'{cf.key}.parquet')
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path, 'wb') as f:
-                            f.write(cf.data)
-                        # Create alias files for name mismatches
-                        ALIASES = {
-                            'c4c_leads': 'leads',      # assembler loads 'leads'
-                            'sap_handover': 'handover', # assembler fallback
-                        }
-                        if cf.key in ALIASES:
-                            alias_path = os.path.join(self.cache_dir, 'data', f'{ALIASES[cf.key]}.parquet')
-                            with open(alias_path, 'wb') as f:
-                                f.write(cf.data)
-                            print(f"  Restored {cf.key} + alias {ALIASES[cf.key]} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                        count += 1
+                        continue
+
+                    # Check if processed parquet is corrupt
+                    is_corrupt = len(cf.data) < 1000 and cf.row_count > 10
+
+                    if is_corrupt:
+                        # Try raw file + re-ingest
+                        raw_key = f'{key}_raw'
+                        raw_cf = cached_files.get(raw_key)
+                        if raw_cf and raw_cf.data and len(raw_cf.data) > 1000:
+                            print(f"  {key}: parquet corrupt ({len(cf.data)} bytes), re-ingesting from raw file ({len(raw_cf.data):,} bytes)...")
+                            try:
+                                import tempfile
+                                suffix = os.path.splitext(raw_cf.filename or '.xlsx')[1]
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                    tmp.write(raw_cf.data)
+                                    tmp_path = tmp.name
+
+                                if key in INGEST_MAP:
+                                    mod_name, func_name = INGEST_MAP[key]
+                                    mod = __import__(mod_name, fromlist=[func_name])
+                                    ingest_fn = getattr(mod, func_name)
+                                    df = ingest_fn(tmp_path)
+
+                                    if hasattr(df, 'to_parquet'):
+                                        path = os.path.join(data_dir, f'{key}.parquet')
+                                        try:
+                                            df.to_parquet(path, index=False)
+                                        except Exception:
+                                            # CSV round-trip fallback
+                                            csv_path = path.replace('.parquet', '.csv')
+                                            df.to_csv(csv_path, index=False)
+                                            import pandas as _pd
+                                            df2 = _pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+                                            df2.to_parquet(path, index=False)
+                                            os.unlink(csv_path)
+
+                                        written = os.path.getsize(path)
+                                        print(f"  Re-ingested {key}: {len(df)} rows, {written:,} bytes")
+
+                                        # Create alias
+                                        if key in ALIASES:
+                                            alias_path = os.path.join(data_dir, f'{ALIASES[key]}.parquet')
+                                            import shutil
+                                            shutil.copy2(path, alias_path)
+
+                                        count += 1
+                                os.unlink(tmp_path)
+                                continue
+                            except Exception as e:
+                                print(f"  Re-ingest failed for {key}: {e}")
                         else:
-                            print(f"  Restored {cf.key} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                            print(f"  {key}: parquet corrupt and no raw file available")
+
+                    # Normal restore: write parquet to disk
+                    path = os.path.join(data_dir, f'{key}.parquet')
+                    with open(path, 'wb') as f:
+                        f.write(cf.data)
+
+                    if key in ALIASES:
+                        alias_path = os.path.join(data_dir, f'{ALIASES[key]}.parquet')
+                        with open(alias_path, 'wb') as f:
+                            f.write(cf.data)
+                        print(f"  Restored {key} + alias {ALIASES[key]} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                    else:
+                        print(f"  Restored {key} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
                     count += 1
+
                 return count
             finally:
                 db.close()
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"  DB restore all error: {e}")
             return 0
 
