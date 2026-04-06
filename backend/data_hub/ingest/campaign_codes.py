@@ -112,33 +112,40 @@ def _parse_xlsx_raw(filepath):
 def _process(df):
     """Normalize Campaign Codes DataFrame."""
     rename = {}
-    col_patterns = {
-        'VIN': 'vin',
-        'Vehicle VIN': 'vin',
-        'Campaign': 'campaign_code',
-        'Code': 'campaign_code',
-        'Type': 'campaign_type',
-        'Program': 'program_name',
-        'Amount': 'amount',
-        'Dealer': 'dealer',
-        'Date': 'effective_date',
-        'CVP': 'is_cvp',
-        'Demo': 'is_demo',
-        'Description': 'description',
-    }
+    # Priority order: most specific patterns first
+    col_patterns = [
+        ('Vehicle VIN', 'vin'),
+        ('Campaign code', 'campaign_code'),
+        ('Campaign Code', 'campaign_code'),
+        ('SO Sales Order', 'order_no'),
+        ('SO Channel', 'channel'),
+        ('Country Name', 'country'),
+        ('Ship to Party', 'ship_to_party'),
+        ('Ship To Party', 'dealer'),
+        ('Handover Status Date', 'handover_date'),
+        ('Registration Date', 'registration_date'),
+        ('Retail Date', 'retail_date'),
+        ('Region Group', 'region'),
+    ]
     for actual_col in df.columns:
-        for pattern, internal in col_patterns.items():
+        for pattern, internal in col_patterns:
             if pattern.lower() in str(actual_col).lower():
                 if internal not in rename.values():
                     rename[actual_col] = internal
                     break
     df = df.rename(columns=rename)
 
-    # Determine campaign type from code/description if not explicit
-    if 'campaign_type' not in df.columns and 'campaign_code' in df.columns:
-        df['campaign_type'] = df['campaign_code'].apply(_classify_campaign)
-    if 'campaign_type' not in df.columns and 'description' in df.columns:
-        df['campaign_type'] = df['description'].apply(_classify_campaign)
+    # Determine campaign type from the "Campaign code applied?" column
+    if 'campaign_code' in df.columns:
+        # The campaign_code column contains values like "YES", "NO", "BLANK"
+        # This indicates whether a campaign code was applied
+        df['has_campaign'] = df['campaign_code'].astype(str).str.upper().isin(['YES', 'TRUE', '1'])
+
+    # Try to classify based on channel or other columns
+    if 'channel' in df.columns:
+        df['campaign_type'] = df['channel'].apply(_classify_campaign)
+    elif 'campaign_code' not in df.columns:
+        df['campaign_type'] = 'Other'
 
     # Convert amount to numeric
     if 'amount' in df.columns:
