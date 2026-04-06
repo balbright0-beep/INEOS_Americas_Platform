@@ -229,33 +229,21 @@ class DataHub:
         with open(cache_path, 'w') as f:
             json.dump(compute_results, f, default=str)
 
-        # Generate Dashboard HTML if template exists
+        # Serve Dashboard HTML from template (preserves existing Master File data)
         dashboard_result = None
         if os.path.exists(self.template_path):
             try:
                 output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
-                dashboard_result = generate_dashboard(compute_results, self.template_path, output_html)
-                errors_dash = []
-
-                # Push to Dashboard App
-                try:
-                    import httpx
-                    dash_url = os.environ.get('DASHBOARD_URL', 'https://ineos-dashboard-app.onrender.com')
-                    # The Dashboard App serves the HTML at / — we need to update it
-                    # Upload the generated HTML as if it were the processed output
-                    with open(output_html, 'rb') as f:
-                        html_bytes = f.read()
-                    # Write directly to Dashboard App's data directory
-                    # Since we can't write to another Render service's filesystem,
-                    # we'll serve it from the Platform instead
-                    dashboard_result['served_from'] = 'platform'
-                except Exception as e:
-                    errors_dash.append(f'Dashboard push: {e}')
-
-                if errors_dash:
-                    errors.extend(errors_dash)
+                import shutil
+                os.makedirs(os.path.dirname(output_html), exist_ok=True)
+                shutil.copy2(self.template_path, output_html)
+                dashboard_result = {
+                    'output_path': output_html,
+                    'file_size': os.path.getsize(output_html),
+                    'note': 'Dashboard served from template with existing data. For full refresh, upload Master File to Dashboard App.',
+                }
             except Exception as e:
-                errors.append(f'Dashboard generation: {e}')
+                errors.append(f'Dashboard copy: {e}')
 
         return {
             'status': 'success',
