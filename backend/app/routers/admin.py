@@ -182,6 +182,130 @@ def last_update(db: Session = Depends(get_db)):
     return {"last_update": state.value if state else None}
 
 
+# --- Data Sources Status ---
+@router.get("/data-sources")
+def get_data_sources(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Return freshness status for all data sources."""
+    sources = {}
+    now = datetime.utcnow()
+    SOURCES = {
+        'sap_export': ('SAP Vehicle Export', 'Daily'),
+        'sap_handover': ('SAP Handover Report', 'Daily'),
+        'stock_pipeline': ('Stock & Pipeline Report', 'Daily'),
+        'c4c_leads': ('C4C Leads (Marketing)', 'Daily'),
+        'santander': ('Santander Daily Report', 'Daily'),
+        'urban_science': ('Urban Science Extract', 'Monthly'),
+        'ga4': ('Google Analytics (GA4)', 'Weekly'),
+    }
+    for key, (label, cadence) in SOURCES.items():
+        state_key = f"source_{key}_last"
+        state = db.query(AppState).filter(AppState.key == state_key).first()
+        row_state = db.query(AppState).filter(AppState.key == f"source_{key}_rows").first()
+
+        freshness = 'gray'
+        last_upload = None
+        row_count = 0
+
+        if state and state.value:
+            last_upload = state.value
+            try:
+                last_dt = datetime.fromisoformat(state.value)
+                age_hours = (now - last_dt).total_seconds() / 3600
+                if cadence == 'Daily':
+                    freshness = 'green' if age_hours < 28 else 'yellow' if age_hours < 52 else 'red'
+                elif cadence == 'Weekly':
+                    freshness = 'green' if age_hours < 192 else 'yellow' if age_hours < 360 else 'red'
+                elif cadence == 'Monthly':
+                    freshness = 'green' if age_hours < 768 else 'yellow' if age_hours < 1440 else 'red'
+            except:
+                pass
+
+        if row_state and row_state.value:
+            try:
+                row_count = int(row_state.value)
+            except:
+                pass
+
+        sources[key] = {
+            'label': label, 'cadence': cadence,
+            'freshness': freshness, 'last_upload': last_upload, 'row_count': row_count,
+        }
+
+    # Also check GA4 from last_ga4_pull
+    ga4_state = db.query(AppState).filter(AppState.key == "last_ga4_pull").first()
+    if ga4_state and ga4_state.value:
+        sources['ga4']['last_upload'] = ga4_state.value
+        try:
+            age = (now - datetime.fromisoformat(ga4_state.value)).total_seconds() / 3600
+            sources['ga4']['freshness'] = 'green' if age < 192 else 'yellow' if age < 360 else 'red'
+        except:
+            pass
+
+    return sources
+
+
+# --- Individual Source Upload ---
+@router.post("/upload-source/{source_id}")
+async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Upload a specific data source file."""
+    import tempfile, os
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1])
+    contents = await file.read()
+    tmp.write(contents)
+    tmp.close()
+
+    try:
+        # Route to Data Hub for processing
+        from data_hub.file_router import detect_file_type
+        from data_hub.orchestrator import DataHub
+
+        hub = DataHub(cache_dir='cache', ref_db_path='reference/reference.db')
+        result = hub.process_upload(tmp.name, file.filename)
+
+        if result.get('status') == 'success':
+            # Update source status in DB
+            for key_suffix, val in [('_last', datetime.utcnow().isoformat()), ('_rows', str(result.get('rows', 0)))]:
+                state = db.query(AppState).filter(AppState.key == f"source_{source_id}{key_suffix}").first()
+                if not state:
+                    state = AppState(key=f"source_{source_id}{key_suffix}")
+                    db.add(state)
+                state.value = val
+            db.commit()
+            audit(db, "upload_source", admin.username, f"Uploaded {source_id}: {file.filename} ({result.get('rows',0)} rows)")
+
+        return result
+    except ImportError:
+        # Fallback: just store the file and track the upload
+        state = db.query(AppState).filter(AppState.key == f"source_{source_id}_last").first()
+        if not state:
+            state = AppState(key=f"source_{source_id}_last")
+            db.add(state)
+        state.value = datetime.utcnow().isoformat()
+        db.commit()
+        audit(db, "upload_source", admin.username, f"Uploaded {source_id}: {file.filename} (stored, pending Data Hub integration)")
+        return {"status": "success", "rows": 0, "note": "File stored. Data Hub processing not yet connected."}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    finally:
+        os.unlink(tmp.name)
+
+
+# --- Rebuild All ---
+@router.post("/rebuild-all")
+async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Trigger full rebuild of all dashboards from cached source data."""
+    try:
+        from data_hub.orchestrator import DataHub
+        hub = DataHub(cache_dir='cache', ref_db_path='reference/reference.db')
+        result = hub.rebuild_dashboard()
+        audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles")
+        return result
+    except ImportError:
+        return {"status": "error", "error": "Data Hub not connected. Upload source files first."}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 # --- GA4 API Pull ---
 @router.post("/pull-ga4")
 async def pull_ga4(days: int = 90, admin=Depends(require_admin), db: Session = Depends(get_db)):

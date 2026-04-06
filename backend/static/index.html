@@ -283,31 +283,75 @@ function AdminLinks(){
 }
 
 function AdminDataUpload(){
-  const[file,setFile]=useState(null);const[status,setStatus]=useState(null);const[loading,setLoading]=useState(false);const[lastUpdate,setLastUpdate]=useState(null);
-  const[ga4Status,setGa4Status]=useState(null);const[ga4Loading,setGa4Loading]=useState(false);const[lastGa4,setLastGa4]=useState(null);
-  useEffect(()=>{API.get('/api/admin/last-update').then(r=>setLastUpdate(r.last_update));API.get('/api/admin/last-ga4-pull').then(r=>setLastGa4(r.last_pull)).catch(()=>{})},[]);
-  const upload=async()=>{if(!file)return;setLoading(true);setStatus(null);try{const r=await API.uploadFile('/api/admin/upload-master',file);setStatus(r);setLastUpdate(r.timestamp)}catch(e){setStatus({error:e.message})}finally{setLoading(false)}};
-  const pullGA4=async()=>{setGa4Loading(true);setGa4Status(null);try{const r=await API.post('/api/admin/pull-ga4?days=90',{});setGa4Status(r);if(r.status==='success')setLastGa4(new Date().toISOString())}catch(e){setGa4Status({error:e.message})}finally{setGa4Loading(false)}};
-  return <div><h2 className="text-xl font-bold mb-4">Data Upload</h2>
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-white rounded-xl border border-ineos-dove p-6">
-        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-ineos-red"></span>Master File Upload</h3>
-        {lastUpdate&&<p className="text-sm text-ineos-iron-smoke mb-3">Last upload: <strong>{new Date(lastUpdate).toLocaleString()}</strong></p>}
-        <p className="text-xs text-ineos-iron-smoke mb-3">Upload the Master File V14 (.xlsb). Refreshes Dashboard, Allocation Tool, and Platform data.</p>
-        <input type="file" accept=".xlsb,.xlsx" onChange={e=>setFile(e.target.files[0])} className="text-sm mb-3 block"/>
-        {file&&<p className="text-sm text-green-600 mb-2">{file.name} ({(file.size/1024/1024).toFixed(1)} MB)</p>}
-        <button onClick={upload} disabled={!file||loading} className="bg-ineos-red text-white rounded px-5 py-2 text-sm font-medium disabled:opacity-50">{loading?'Uploading...':'Upload Master File'}</button>
-        {status&&!status.error&&<div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-xs"><p className="font-medium text-green-700">Upload complete!</p><p>Dashboard: {status.results?.dashboard}</p><p>Allocation: {status.results?.allocation}</p></div>}
-        {status?.error&&<p className="mt-3 text-red-600 text-xs">{status.error}</p>}
-      </div>
-      <div className="bg-white rounded-xl border border-ineos-dove p-6">
-        <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-blue-500"></span>Google Analytics (GA4)</h3>
-        {lastGa4&&<p className="text-sm text-ineos-iron-smoke mb-3">Last pull: <strong>{new Date(lastGa4).toLocaleString()}</strong></p>}
-        {!lastGa4&&<p className="text-sm text-ineos-silver-dust mb-3">Never pulled</p>}
-        <p className="text-xs text-ineos-iron-smoke mb-3">Pull all 6 GA4 reports (Engagement, Acquisition, User Attributes, Demographics, Audiences, Tech) via the Google Analytics API. 90-day lookback.</p>
-        <button onClick={pullGA4} disabled={ga4Loading} className="text-white rounded px-5 py-2 text-sm font-medium disabled:opacity-50" style={{background:'#3478B2'}}>{ga4Loading?'Pulling GA4 Data...':'Pull GA4 Data'}</button>
-        {ga4Status&&ga4Status.status==='success'&&<div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-xs"><p className="font-medium text-blue-700">GA4 data pulled!</p>{Object.entries(ga4Status.reports||{}).map(([k,v])=><p key={k}>{k}: {v.rows} rows</p>)}</div>}
-        {ga4Status&&ga4Status.status==='error'&&<p className="mt-3 text-red-600 text-xs">{ga4Status.error}</p>}
+  const[sources,setSources]=useState({});const[uploading,setUploading]=useState({});const[results,setResults]=useState({});
+  const[ga4Loading,setGa4Loading]=useState(false);const[ga4Status,setGa4Status]=useState(null);
+  useEffect(()=>{API.get('/api/admin/data-sources').then(setSources).catch(()=>{})},[]);
+
+  const CARDS=[
+    {id:'sap_export',label:'SAP Vehicle Export',desc:'Daily vehicle data export from SAP (~21K rows, 50 cols). Primary vehicle data source.',cadence:'Daily',accept:'.xlsx',color:'#FF4639'},
+    {id:'sap_handover',label:'SAP Handover Report',desc:'Handover dates, revenue recognition, retail dates. Indexed by VIN.',cadence:'Daily',accept:'.xlsx',color:'#C75B39'},
+    {id:'stock_pipeline',label:'Stock & Pipeline Report',desc:'Vessel ETAs, shipping data, pipeline positions. Replaces VESSEL ETA sheet.',cadence:'Daily',accept:'.xlsx,.xlsb',color:'#F9A825'},
+    {id:'c4c_leads',label:'C4C Leads (Marketing)',desc:'Lead data from C4C — brand leads, test drives, retailer status.',cadence:'Daily',accept:'.xlsx',color:'#7B5EA7'},
+    {id:'santander',label:'Santander Daily Report',desc:'Finance & lease application volume, approvals, fundings.',cadence:'Daily',accept:'.xlsx',color:'#00897B'},
+    {id:'urban_science',label:'Urban Science Extract',desc:'Customer geography data — city, state, ZIP for distance analysis.',cadence:'Monthly',accept:'.xlsx',color:'#5C6BC0'},
+  ];
+
+  const uploadFile=async(sourceId,file)=>{
+    setUploading(u=>({...u,[sourceId]:true}));setResults(r=>({...r,[sourceId]:null}));
+    try{
+      const res=await API.uploadFile(`/api/admin/upload-source/${sourceId}`,file);
+      setResults(r=>({...r,[sourceId]:res}));
+      API.get('/api/admin/data-sources').then(setSources);
+    }catch(e){setResults(r=>({...r,[sourceId]:{error:e.message}}))}
+    finally{setUploading(u=>({...u,[sourceId]:false}))}
+  };
+
+  const pullGA4=async()=>{setGa4Loading(true);setGa4Status(null);try{const r=await API.post('/api/admin/pull-ga4?days=90',{});setGa4Status(r)}catch(e){setGa4Status({error:e.message})}finally{setGa4Loading(false);API.get('/api/admin/data-sources').then(setSources)}};
+
+  const rebuildAll=async()=>{toast('Rebuilding all dashboards...','info');try{const r=await API.post('/api/admin/rebuild-all',{});if(r.status==='success')toast('All dashboards rebuilt!','success');else toast('Error: '+(r.error||'Unknown'),'error')}catch(e){toast('Rebuild failed','error')}};
+
+  const freshColor=(s)=>s==='green'?'#2E7D32':s==='yellow'?'#F9A825':s==='red'?'#C4281D':'#9F9F9F';
+  const freshBg=(s)=>s==='green'?'#E8F5E9':s==='yellow'?'#FFF8E1':s==='red'?'#FFEBE9':'#F5F5F5';
+
+  return <div>
+    <div className="flex items-center justify-between mb-4">
+      <div><h2 className="text-xl font-bold">Data Sources</h2><p className="text-xs text-ineos-iron-smoke mt-1">Upload raw source files to refresh all dashboards. No more Master File needed.</p></div>
+      <button onClick={rebuildAll} className="bg-ineos-charcoal text-white rounded px-5 py-2 text-sm font-medium hover:opacity-90">Rebuild All Dashboards</button>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {CARDS.map(card=>{
+        const s=sources[card.id]||{};
+        const fresh=s.freshness||'gray';
+        const r=results[card.id];
+        return <div key={card.id} className="rounded-xl p-5 transition-all hover:shadow-md" style={{background:freshBg(fresh),borderLeft:`4px solid ${freshColor(fresh)}`}}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-semibold text-sm" style={{fontFamily:'var(--ids-font-heading)'}}>{card.label}</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,0.7)',color:'var(--ids-text-tertiary)'}}>{card.cadence}</span>
+          </div>
+          <p className="text-[11px] text-ineos-iron-smoke mb-2">{card.desc}</p>
+          {s.last_upload&&<p className="text-[11px] mb-1" style={{color:freshColor(fresh)}}>Updated: {new Date(s.last_upload).toLocaleString()} &middot; {s.row_count?.toLocaleString()||0} rows</p>}
+          {!s.last_upload&&<p className="text-[11px] text-ineos-silver-dust mb-1">Never uploaded</p>}
+          <div className="mt-2">
+            <input type="file" id={`file-${card.id}`} accept={card.accept} style={{display:'none'}} onChange={e=>{if(e.target.files[0])uploadFile(card.id,e.target.files[0]);e.target.value=''}}/>
+            <label htmlFor={`file-${card.id}`} className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-xs font-medium cursor-pointer transition-all hover:opacity-80" style={{background:card.color,color:'#fff'}}>{uploading[card.id]?'Uploading...':'Upload '+card.accept}</label>
+          </div>
+          {r&&r.status==='success'&&<p className="text-[11px] text-green-700 mt-2">{r.rows?.toLocaleString()} rows loaded</p>}
+          {r&&r.error&&<p className="text-[11px] text-red-600 mt-2">{r.error}</p>}
+        </div>
+      })}
+
+      <div className="rounded-xl p-5 transition-all hover:shadow-md" style={{background:freshBg(sources.ga4?.freshness||'gray'),borderLeft:`4px solid #3478B2`}}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="font-semibold text-sm" style={{fontFamily:'var(--ids-font-heading)'}}>Google Analytics (GA4)</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,0.7)',color:'var(--ids-text-tertiary)'}}>API</span>
+        </div>
+        <p className="text-[11px] text-ineos-iron-smoke mb-2">Pull all 6 GA4 reports automatically via Google Analytics API. 90-day lookback.</p>
+        {sources.ga4?.last_upload&&<p className="text-[11px] text-blue-700 mb-1">Last pull: {new Date(sources.ga4.last_upload).toLocaleString()} &middot; {sources.ga4.row_count?.toLocaleString()||0} rows</p>}
+        {!sources.ga4?.last_upload&&<p className="text-[11px] text-ineos-silver-dust mb-1">Never pulled</p>}
+        <button onClick={pullGA4} disabled={ga4Loading} className="mt-2 px-3 py-1.5 rounded text-xs font-medium text-white disabled:opacity-50" style={{background:'#3478B2'}}>{ga4Loading?'Pulling...':'Pull GA4 Data'}</button>
+        {ga4Status?.status==='success'&&<div className="mt-2 text-[11px] text-blue-700">{Object.entries(ga4Status.reports||{}).map(([k,v])=><span key={k} className="mr-2">{k}: {v.rows}</span>)}</div>}
+        {ga4Status?.error&&<p className="text-[11px] text-red-600 mt-2">{ga4Status.error}</p>}
       </div>
     </div>
   </div>;
