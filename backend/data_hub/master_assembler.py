@@ -243,26 +243,35 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         return ''
 
     def _date_to_serial(d):
-        """Convert a date/datetime to Excel serial number for the processor."""
-        if d is None or (isinstance(d, float) and np.isnan(d)):
+        """Convert a date/datetime/Timestamp to Excel serial number for the processor.
+
+        The processor's serial_to_date() expects: int(float(value)) → days since 1899-12-30.
+        Returns None for null/NaT/invalid dates.
+        """
+        import pandas as _pd
+        if d is None:
+            return None
+        # Handle pandas NaT (Not a Time) — must check before float/hasattr
+        if isinstance(d, type(_pd.NaT)) or _pd.isna(d) if not isinstance(d, str) else False:
             return None
         if isinstance(d, (int, float)):
+            if np.isnan(d):
+                return None
             return d  # Already a serial number
         try:
             from datetime import datetime as dt
             if isinstance(d, str):
-                for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S'):
-                    try:
-                        d = dt.strptime(d, fmt)
-                        break
-                    except ValueError:
-                        continue
-                else:
+                # Try parsing as pandas timestamp first (handles many formats)
+                try:
+                    d = _pd.to_datetime(d, errors='coerce')
+                    if _pd.isna(d):
+                        return None
+                except Exception:
                     return None
             if hasattr(d, 'toordinal'):
                 # Excel serial date: days since 1899-12-30
                 delta = d - dt(1899, 12, 30)
-                return delta.days + (delta.seconds / 86400.0)
+                return delta.days + (getattr(delta, 'seconds', 0) / 86400.0)
         except Exception:
             pass
         return None
@@ -368,13 +377,108 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
 
 
 def _write_leads_sheet(ws, leads):
-    """Write Raw Lead Data sheet."""
-    # The processor reads from row 1+ with specific column positions
-    # It builds TDD (brand leads) and other lead metrics
-    cols = list(leads.columns)
-    ws.append(cols)
+    """Write Raw Lead Data sheet in ORIGINAL C4C column order.
+
+    The processor reads Raw Lead Data by column INDEX (not name).
+    Critical indices:
+      [2]  = Retailer Name (dealer)
+      [12] = Marketing Unit (market)
+      [16] = Start Date (lead creation date — serial number!)
+      [25] = Test drive booking date (serial number!)
+      [39] = QM flag (added by us, may not exist in original)
+
+    The columns must be in the same order as the original C4C export.
+    Dates must be converted to Excel serial numbers for serial_to_date().
+    """
+    # Original C4C column order → internal DataFrame column names
+    LEADS_COL_ORDER = [
+        ('Lead ID', 'lead_id'),                          # [0]
+        ('Name', 'lead_name'),                           # [1]
+        ('Retailer Name', 'retailer_name'),              # [2] ← processor uses
+        ('Company/Customer', 'customer_name'),           # [3]
+        ('Customer Phone', 'customer_phone'),            # [4]
+        ('Customer Mobile', 'customer_mobile'),          # [5]
+        ('Customer E-Mail', 'customer_email'),           # [6]
+        ('Status', 'lead_status'),                       # [7]
+        ('Reason Code', 'reason_code'),                  # [8]
+        ('Retailer Status', 'retailer_status'),          # [9]
+        ('Retailer Country Name', 'retailer_country'),   # [10]
+        ('Country/Region', 'country_region'),            # [11]
+        ('Marketing Unit', 'marketing_unit'),            # [12]
+        ('Source', 'source'),                             # [13]
+        ('Qualified', 'qualified_date'),                  # [14]
+        ('Closed', 'closed_date'),                       # [15]
+        ('Start Date', 'start_date'),                    # [16] ← processor uses as lead creation date
+        ('End Date', 'end_date'),                        # [17]
+        ('Category', 'category'),                        # [18]
+        ('Owner', 'owner'),                              # [19]
+        ('Created On', 'created_on'),                    # [20]
+        ('Model of Interest', 'model_interest'),         # [21]
+        ('Test Drive Requested Date', 'td_requested'),   # [22]
+        ('First contact attempt', 'first_contact'),      # [23]
+        ('Retailer First Status Changed On', 'first_status_change'),  # [24]
+        ('Test drive booking date', 'td_booking_date'),  # [25] ← processor uses
+        ('Test drive booking time', 'td_booking_time'),  # [26]
+        ('Booking ID', 'booking_id'),                    # [27]
+        ('Test Drive Completed Date', 'td_completed_date'),  # [28]
+        ('Test drive completed', 'td_completed_flag'),   # [29]
+        ('Note Exists', 'note_exists'),                  # [30]
+        ('Marketing Unit 2', 'marketing_unit'),          # [31] ← processor reads for market fallback
+    ]
+
+    # Date columns that need serial number conversion (for serial_to_date())
+    DATE_COLS = {
+        'qualified_date', 'closed_date', 'start_date', 'end_date',
+        'created_on', 'td_requested', 'first_contact', 'first_status_change',
+        'td_booking_date', 'td_completed_date',
+    }
+
+    def _to_serial(val):
+        """Convert date to Excel serial number."""
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return None
+        if isinstance(val, (int, float)):
+            return val  # Already serial
+        try:
+            if isinstance(val, str):
+                import pandas as _pd
+                val = _pd.to_datetime(val, errors='coerce')
+                if _pd.isna(val):
+                    return None
+            if hasattr(val, 'toordinal'):
+                delta = val - datetime(1899, 12, 30)
+                return delta.days + (getattr(delta, 'seconds', 0) / 86400.0)
+        except Exception:
+            pass
+        return None
+
+    # Write header row (original names)
+    headers = [orig for orig, _ in LEADS_COL_ORDER]
+    # Pad to 40 columns to ensure r[39] access works
+    while len(headers) < 40:
+        headers.append('')
+    ws.append(headers)
+
+    # Write data rows in the correct column order
     for _, r in leads.iterrows():
-        ws.append([str(r.get(c, '')) for c in cols])
+        row = []
+        for _, int_name in LEADS_COL_ORDER:
+            val = r.get(int_name, '')
+            if int_name in DATE_COLS:
+                serial = _to_serial(val)
+                row.append(serial if serial is not None else '')
+            else:
+                row.append(str(val) if val is not None and str(val) not in ('nan', 'NaT', 'None') else '')
+
+        # Pad to 40 columns so r[39] (QM flag) is accessible
+        while len(row) < 40:
+            row.append('')
+
+        # Set QM flag at index 39 if available
+        body_type = str(r.get('body_type', '')).lower()
+        row[39] = 'Yes' if body_type == 'qm' else ''
+
+        ws.append(row)
 
 
 def _write_rbm_sheet(ws, sap):
