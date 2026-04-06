@@ -150,13 +150,34 @@ class DataHub:
                             f.write(cf.data)
                         self.upload_status = self._load_status()
                         print(f"  Restored upload_status from DB")
+                    elif cf.key == 'santander':
+                        # Restore santander JSON (stored by upload-source endpoint)
+                        sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
+                        os.makedirs(os.path.dirname(sant_path), exist_ok=True)
+                        with open(sant_path, 'wb') as f:
+                            f.write(cf.data)
+                        # Also save as santander.json for compatibility
+                        with open(os.path.join(self.cache_dir, 'data', 'santander.json'), 'wb') as f:
+                            f.write(cf.data)
+                        print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
                     else:
                         # Restore parquet file
                         path = os.path.join(self.cache_dir, 'data', f'{cf.key}.parquet')
                         os.makedirs(os.path.dirname(path), exist_ok=True)
                         with open(path, 'wb') as f:
                             f.write(cf.data)
-                        print(f"  Restored {cf.key} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                        # Create alias files for name mismatches
+                        ALIASES = {
+                            'c4c_leads': 'leads',      # assembler loads 'leads'
+                            'sap_handover': 'handover', # assembler fallback
+                        }
+                        if cf.key in ALIASES:
+                            alias_path = os.path.join(self.cache_dir, 'data', f'{ALIASES[cf.key]}.parquet')
+                            with open(alias_path, 'wb') as f:
+                                f.write(cf.data)
+                            print(f"  Restored {cf.key} + alias {ALIASES[cf.key]} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                        else:
+                            print(f"  Restored {cf.key} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
                     count += 1
                 return count
             finally:

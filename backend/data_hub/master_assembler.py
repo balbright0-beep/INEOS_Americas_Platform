@@ -38,20 +38,27 @@ def assemble_master_xlsx(cache_dir, template_path=None):
             return pd.read_parquet(path)
         return None
 
-    sap = load('sap_export')
+    def load_any(*names):
+        """Try loading from multiple possible key names."""
+        for name in names:
+            df = load(name)
+            if df is not None:
+                print(f"  Loaded {name}: {len(df)} rows")
+                return df
+        return None
+
+    sap = load_any('sap_export')
     if sap is None:
         raise RuntimeError("SAP Vehicle Export not uploaded yet.")
 
-    handover = load('sap_handover')
-    if handover is None:
-        handover = load('handover')
-    leads = load('leads')
-    stock_pipeline = load('stock_pipeline')
-    sales_order = load('sales_order')
-    urban_science = load('urban_science')
-    campaign_codes = load('campaign_codes')
-    incentive_spend = load('incentive_spend')
-    qm_leads = load('qm_leads')
+    handover = load_any('sap_handover', 'handover')
+    leads = load_any('leads', 'c4c_leads')
+    stock_pipeline = load_any('stock_pipeline')
+    sales_order = load_any('sales_order')
+    urban_science = load_any('urban_science')
+    campaign_codes = load_any('campaign_codes')
+    incentive_spend = load_any('incentive_spend')
+    qm_leads = load_any('qm_leads')
 
     # Auto-detect template path if not provided
     if template_path is None:

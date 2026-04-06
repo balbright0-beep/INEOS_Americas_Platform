@@ -322,19 +322,52 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
                 # DataFrame
                 row_count = len(result_data)
 
-            # Cache the data
+            # Cache the data on disk AND persist to PostgreSQL
             cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache', 'data')
             os.makedirs(cache_dir, exist_ok=True)
             if hasattr(result_data, 'to_parquet'):
+                parquet_path = os.path.join(cache_dir, f'{source_id}.parquet')
                 try:
-                    result_data.to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
+                    result_data.to_parquet(parquet_path, index=False)
                 except Exception:
-                    # Fallback: convert all columns to string for mixed-type DataFrames
-                    result_data.astype(str).to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
+                    result_data.astype(str).to_parquet(parquet_path, index=False)
+
+                # Persist to PostgreSQL (survives Render deploys)
+                try:
+                    from app.models import CachedFile
+                    with open(parquet_path, 'rb') as pf:
+                        parquet_bytes = pf.read()
+                    existing = db.query(CachedFile).filter(CachedFile.key == source_id).first()
+                    if existing:
+                        existing.data = parquet_bytes
+                        existing.row_count = row_count
+                        existing.filename = file.filename
+                        existing.uploaded_at = datetime.utcnow()
+                    else:
+                        db.add(CachedFile(key=source_id, data=parquet_bytes, row_count=row_count, filename=file.filename))
+                    db.commit()
+                except Exception as e:
+                    print(f"  DB persist warning for {source_id}: {e}")
             else:
                 import json
-                with open(os.path.join(cache_dir, f'{source_id}.json'), 'w') as f:
-                    json.dump(result_data, f, default=str)
+                json_path = os.path.join(cache_dir, f'{source_id}.json')
+                json_str = json.dumps(result_data, default=str)
+                with open(json_path, 'w') as f:
+                    f.write(json_str)
+                # Persist JSON to DB too
+                try:
+                    from app.models import CachedFile
+                    existing = db.query(CachedFile).filter(CachedFile.key == source_id).first()
+                    if existing:
+                        existing.data = json_str.encode('utf-8')
+                        existing.row_count = row_count
+                        existing.filename = file.filename
+                        existing.uploaded_at = datetime.utcnow()
+                    else:
+                        db.add(CachedFile(key=source_id, data=json_str.encode('utf-8'), row_count=row_count, filename=file.filename))
+                    db.commit()
+                except Exception as e:
+                    print(f"  DB persist warning for {source_id}: {e}")
         else:
             return {"status": "error", "error": f"Unknown source: {source_id}"}
 
