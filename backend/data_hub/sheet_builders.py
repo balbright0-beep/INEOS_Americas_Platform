@@ -259,6 +259,12 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
     total_all = sum(d['sw'] + d['qm'] + d['svo'] for d in region_mtd.values())
     total = {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0, 'obj': 0}
 
+    # Debug: show what we counted
+    print(f"  [RS Debug] cur_month={cur_month}, total_all={total_all}")
+    for mkt, d in region_mtd.items():
+        print(f"  [RS Debug] region_mtd[{mkt}] = sw={d['sw']} qm={d['qm']} svo={d['svo']}")
+    print(f"  [RS Debug] dealer_data has {sum(1 for d in dealer_data.values() if d['total']>0)} dealers with MTD data")
+
     for region in region_order:
         d = region_mtd.get(region, {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
         sw, qm, svo, cvp_n = d['sw'], d['qm'], d['svo'], d['cvp']
