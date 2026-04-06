@@ -382,7 +382,18 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
             output_dir=os.path.join(base, 'outputs'),
         )
         result = hub.rebuild_dashboard()
-        audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles")
+
+        # Add diagnostic info
+        output_path = os.path.join(base, 'outputs', 'Americas_Daily_Dashboard.html')
+        result['_debug'] = {
+            'output_exists': os.path.exists(output_path),
+            'output_size': os.path.getsize(output_path) if os.path.exists(output_path) else 0,
+            'template_exists': os.path.exists(os.path.join(base, 'templates', 'dashboard_template.html')),
+            'cache_files': os.listdir(os.path.join(base, 'cache', 'data')) if os.path.isdir(os.path.join(base, 'cache', 'data')) else [],
+            'base_dir': base,
+        }
+
+        audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles, output={result['_debug']['output_size']} bytes")
         return result
     except ImportError as e:
         return {"status": "error", "error": f"Data Hub not connected: {e}"}

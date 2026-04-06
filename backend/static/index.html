@@ -348,8 +348,9 @@ function AdminDataUpload(){
       <div>
         <span className="font-semibold text-base text-white" style={{fontFamily:'var(--ids-font-heading)'}}>Rebuild All Dashboards</span>
         <p className="text-xs mt-1" style={{color:'#aaa'}}>Generate the Americas Dashboard from all uploaded source files above. No Master File needed.</p>
-        {rebuildResult&&rebuildResult.status==='success'&&<p className="text-xs text-green-400 mt-1">✓ Dashboard rebuilt — {rebuildResult.vehicle_count?.toLocaleString()||0} vehicles • {new Date(rebuildResult.timestamp).toLocaleString()}</p>}
+        {rebuildResult&&rebuildResult.status==='success'&&<div className="text-xs text-green-400 mt-1"><p>✓ Dashboard rebuilt — {rebuildResult.vehicle_count?.toLocaleString()||0} vehicles • {rebuildResult.timestamp}</p><p className="text-[10px] opacity-70 mt-0.5">Output: {rebuildResult._debug?.output_size?.toLocaleString()||'?'} bytes | Files: {rebuildResult._debug?.cache_files?.length||0} cached | <a href="/dashboard" target="_blank" className="underline">Open Dashboard ↗</a></p></div>}
         {rebuildResult&&rebuildResult.error&&<p className="text-xs text-red-400 mt-1">✗ {rebuildResult.error}</p>}
+        {rebuildResult&&!rebuildResult.status&&!rebuildResult.error&&<p className="text-xs text-yellow-400 mt-1">⚠ Unexpected response: {JSON.stringify(rebuildResult).substring(0,200)}</p>}
       </div>
       <button onClick={doRebuild} disabled={rebuildLoading} className="px-6 py-3 rounded-lg text-sm font-bold text-white disabled:opacity-50 transition-all hover:scale-105" style={{background:'linear-gradient(135deg,#FF4639,#D4342A)',boxShadow:'0 4px 14px rgba(255,70,57,0.4)'}}>{rebuildLoading?'Rebuilding...':'⚡ Rebuild All'}</button>
     </div>

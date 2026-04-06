@@ -59,6 +59,40 @@ def public_last_update(db: Session = Depends(get_db)):
     state = db.query(AppState).filter(AppState.key == "last_master_upload").first()
     return {"last_update": state.value if state else None}
 
+# Diagnostic endpoint to check dashboard file status
+@app.get("/api/dashboard-status")
+def dashboard_status():
+    """Check if the dashboard output file exists and when it was last modified."""
+    base = os.path.dirname(os.path.dirname(__file__))
+    output_path = os.path.join(base, 'outputs', 'Americas_Daily_Dashboard.html')
+    template_path = os.path.join(base, 'templates', 'dashboard_template.html')
+    cache_dir = os.path.join(base, 'cache', 'data')
+
+    result = {
+        'output_path': output_path,
+        'output_exists': os.path.exists(output_path),
+        'template_exists': os.path.exists(template_path),
+        'cache_dir_exists': os.path.isdir(cache_dir),
+        'base_dir': base,
+        'cwd': os.getcwd(),
+    }
+
+    if result['output_exists']:
+        stat = os.stat(output_path)
+        from datetime import datetime
+        result['output_size'] = stat.st_size
+        result['output_modified'] = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
+    if result['template_exists']:
+        result['template_size'] = os.path.getsize(template_path)
+
+    if result['cache_dir_exists']:
+        result['cached_files'] = os.listdir(cache_dir)
+    else:
+        result['cached_files'] = []
+
+    return result
+
 # Serve generated Dashboard HTML — MUST be before static mount
 @app.get("/dashboard", response_class=HTMLResponse)
 async def serve_dashboard():
@@ -66,6 +100,11 @@ async def serve_dashboard():
     dash_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs', 'Americas_Daily_Dashboard.html')
     if os.path.exists(dash_path):
         with open(dash_path, 'r', encoding='utf-8') as f:
+            return HTMLResponse(content=f.read())
+    # Fallback: try serving the template directly
+    tmpl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'dashboard_template.html')
+    if os.path.exists(tmpl_path):
+        with open(tmpl_path, 'r', encoding='utf-8') as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="""<!DOCTYPE html><html><head>
     <link rel="stylesheet" href="/ids.css">
