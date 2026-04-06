@@ -182,7 +182,25 @@ def _process_leads(df):
                 break
     df = df.rename(columns=rename)
 
-    # Parse date columns safely
+    # Parse date columns — handle both serial numbers (45324) and date strings
+    from datetime import datetime, timedelta
+    def _parse_date_value(v):
+        if v is None or str(v).strip() in ('', 'nan', 'NaT', 'None'):
+            return pd.NaT
+        s = str(v).strip()
+        # Check if it's an Excel serial number (numeric > 30000)
+        try:
+            num = float(s)
+            if 30000 < num < 60000:  # Valid Excel date range (1982-2064)
+                return datetime(1899, 12, 30) + timedelta(days=int(num))
+        except (ValueError, TypeError):
+            pass
+        # Try standard date parsing
+        try:
+            return pd.to_datetime(s, errors='coerce')
+        except Exception:
+            return pd.NaT
+
     date_cols = [
         'qualified_date', 'closed_date', 'start_date', 'end_date', 'created_on',
         'td_requested', 'first_contact', 'first_status_change',
@@ -190,7 +208,7 @@ def _process_leads(df):
     ]
     for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
+            df[col] = df[col].apply(_parse_date_value)
 
     # Drop empty rows
     if 'lead_id' in df.columns:
