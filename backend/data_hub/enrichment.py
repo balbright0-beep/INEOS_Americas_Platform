@@ -20,6 +20,11 @@ def enrich(sap_df, handover_df=None, stock_pipeline_df=None,
     df = sap_df.copy()
     today = pd.Timestamp.now().normalize()
 
+    # Normalize key columns to string for consistent merging
+    for col in ['vin', 'order_no']:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
     # Open reference DB if it exists, otherwise skip DB-dependent enrichments
     import os
     conn = None
@@ -39,11 +44,14 @@ def enrich(sap_df, handover_df=None, stock_pipeline_df=None,
 
     # ═══ 2. VESSEL ETA + VESSEL NAME (cols 52, 53) ═══
     if stock_pipeline_df is not None and len(stock_pipeline_df) > 0:
+        sp = stock_pipeline_df.copy()
+        if 'order_no' in sp.columns:
+            sp['order_no'] = sp['order_no'].astype(str).str.strip()
         sp_cols = ['order_no']
         for c in ['shipping_eta', 'vessel']:
-            if c in stock_pipeline_df.columns:
+            if c in sp.columns:
                 sp_cols.append(c)
-        vessel = stock_pipeline_df[sp_cols].drop_duplicates('order_no')
+        vessel = sp[sp_cols].drop_duplicates('order_no')
         if 'order_no' in df.columns:
             df = df.merge(vessel, on='order_no', how='left', suffixes=('', '_sp'))
 
