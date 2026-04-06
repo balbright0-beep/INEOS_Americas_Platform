@@ -329,8 +329,26 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
                 parquet_path = os.path.join(cache_dir, f'{source_id}.parquet')
                 try:
                     result_data.to_parquet(parquet_path, index=False)
-                except Exception:
-                    result_data.astype(str).to_parquet(parquet_path, index=False)
+                except Exception as pe1:
+                    print(f"  Parquet save failed for {source_id}: {pe1}")
+                    try:
+                        # Convert problematic columns to string
+                        for col in result_data.columns:
+                            if result_data[col].dtype == 'object':
+                                result_data[col] = result_data[col].astype(str)
+                        result_data.to_parquet(parquet_path, index=False)
+                    except Exception as pe2:
+                        print(f"  Parquet string fallback also failed: {pe2}")
+                        # Last resort: pickle
+                        import pickle
+                        pickle_path = parquet_path.replace('.parquet', '.pkl')
+                        with open(pickle_path, 'wb') as pf:
+                            pickle.dump(result_data, pf)
+
+                # Verify the file was written correctly
+                written_size = os.path.getsize(parquet_path) if os.path.exists(parquet_path) else 0
+                if written_size < 1000 and row_count > 10:
+                    print(f"  WARNING: {source_id} parquet is suspiciously small ({written_size} bytes for {row_count} rows)")
 
                 # Persist to PostgreSQL (survives Render deploys)
                 try:

@@ -346,8 +346,20 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         vessel = vsl.get('vessel', '') if isinstance(vsl, dict) else getattr(vsl, 'vessel', '')
         dis = vsl.get('days_in_stock', vsl.get('dis', '')) if isinstance(vsl, dict) else getattr(vsl, 'days_in_stock', getattr(vsl, 'dis', ''))
 
-        # Bill-to dealer
-        bill_to = billto_map.get(vin, 'Not Handed Over')
+        # Bill-to dealer — from Sales Order, with channel-based fallback
+        # The processor classifies "Fleet", "Internal", "Enterprise" as non-retail
+        bill_to = billto_map.get(vin, '')
+        if not bill_to:
+            # Fallback: derive from SAP channel if no sales order data
+            ch = channel.upper()
+            if any(x in ch for x in ('FLEET', 'RENTAL')):
+                bill_to = 'Fleet'
+            elif any(x in ch for x in ('INTERNAL', 'EMPLOYEE')):
+                bill_to = 'Internal'
+            elif 'ENTERPRISE' in ch or 'IECP' in ch:
+                bill_to = 'Enterprise'
+            else:
+                bill_to = 'Not Handed Over'
 
         # Market area (from SAP data if available)
         market = _sap_val(r, 'market_area', 'region_group', 'Country Region Group')
