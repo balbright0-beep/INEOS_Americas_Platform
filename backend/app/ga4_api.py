@@ -98,7 +98,7 @@ REPORTS = {
     },
     'audiences': {
         'dimensions': ['audienceName'],
-        'metrics': ['totalUsers'],
+        'metrics': ['totalUsers', 'sessions'],
     },
     'tech': {
         'dimensions': ['deviceCategory', 'operatingSystem', 'browser'],
