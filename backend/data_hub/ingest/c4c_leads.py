@@ -127,7 +127,28 @@ def _parse_xlsx_raw(filepath):
     headers = data[header_idx]
     data_rows = data[header_idx + 1:]
 
-    df = pd.DataFrame(data_rows, columns=headers)
+    # Deduplicate and name empty headers
+    seen = {}
+    clean_headers = []
+    for i, h in enumerate(headers):
+        h = h.strip() if h else ''
+        if not h:
+            h = f'_col_{i}'
+        if h in seen:
+            seen[h] += 1
+            h = f'{h}.{seen[h]}'
+        else:
+            seen[h] = 0
+        clean_headers.append(h)
+
+    # Trim data rows to match header count
+    data_rows = [r[:len(clean_headers)] for r in data_rows]
+
+    df = pd.DataFrame(data_rows, columns=clean_headers)
+
+    # Drop unnamed columns
+    df = df[[c for c in df.columns if not c.startswith('_col_')]]
+
     return _process_leads(df)
 
 
