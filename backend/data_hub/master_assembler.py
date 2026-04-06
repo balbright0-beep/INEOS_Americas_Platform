@@ -105,7 +105,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Retail Sales Report ═══
     ws_rsr = wb.create_sheet("Retail Sales Report")
-    build_retail_sales_sheet(ws_rsr, export_rows, mkt_map)
+    build_retail_sales_sheet(ws_rsr, export_rows, mkt_map, template_path=template_path)
     print("  Retail Sales Report: populated from export data")
 
     # ═══ SHEET: Dealer Performance Dashboard ═══

@@ -104,6 +104,22 @@ def _safe_date(val):
         return None
 
 
+def _classify_bt(channel, billto_val=''):
+    """Classify a vehicle as Retail/Fleet/Internal/Enterprise.
+    Matches the exact logic in the assembler's Export sheet column 58."""
+    NON_RETAIL = {'Fleet', 'Internal', 'Enterprise'}
+    if billto_val and billto_val in NON_RETAIL:
+        return billto_val
+    ch = str(channel).upper().strip()
+    if ch == 'RENTAL':
+        return 'Fleet'
+    elif ch == 'EMPLOYEE':
+        return 'Enterprise'
+    elif ch in ('INTERNAL FLEET', 'ICO'):
+        return 'Internal'
+    return 'Retail'
+
+
 def _build_market_map(sap, template_path=None):
     """Build dealer→market mapping.
 
@@ -222,6 +238,9 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
         if 'campaign_type' in campaign_codes.columns:
             cvp_vins = set(campaign_codes[campaign_codes['campaign_type'] == 'CVP']['vin'].dropna().astype(str).str.upper())
 
+    # Bill-to category classification (matching assembler logic)
+    NON_RETAIL_BT = {'Fleet', 'Internal', 'Enterprise'}
+
     mkt_map = _build_market_map(sap, template_path)
 
     for _, r in sap.iterrows():
@@ -282,6 +301,7 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             'is_cvp': vin in cvp_vins,
             'plant': _safe_str(r.get('plant_code', '')),
             'trim': _safe_str(r.get('trim', '')),
+            'bt_cat': _classify_bt(channel, billto_map.get(vin, '')),
         })
 
     return rows, mkt_map
@@ -291,22 +311,39 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
 # Retail Sales Report
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
-    """Populate Retail Sales Report.
+def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template_path=None):
+    """Populate Retail Sales Report matching the Master File structure.
 
-    Rows 6-13: regional summary → [2]=region [3]=SW [4]=QM [5]=SVO [6]=total [7]=obj [8]=PO% [9]=MX% [15]=CVP
-    Rows 22+: MTD_DLR per-dealer → [1]=region header or [2]=dealer name, [3]=SW [4]=QM [5]=SVO [6]=total [7]=PM [8]=PY
+    Structure: "Internal/Fleet/Rental" as first region row, then dealer regions,
+    then Total. Non-retail vehicles (Fleet/Internal/Enterprise) are separated
+    from regional retail counts — matching how build_PM classifies them.
     """
     today = datetime.now()
     cur_month = today.strftime('%Y-%m')
     prev_month = (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
     prev_year_month = f'{today.year - 1}-{today.strftime("%m")}'
 
-    region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
-    obj_by_region = objectives or {}
+    # Region order matches the known-good RS exactly
+    region_order = ['Internal/Fleet/Rental', 'Central', 'Western', 'Mexico',
+                    'Southeast', 'Northeast', 'Canada']
 
-    # ── Count MTD sales by region/body ──
+    # Extract per-region objectives from template RS constant
+    obj_by_region = {}
+    if template_path and os.path.exists(template_path):
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                html = f.read()
+            m = re.search(r'const\s+RS\s*=\s*(\[.*?\]);', html, re.DOTALL)
+            if m:
+                for row in json.loads(m.group(1)):
+                    if row.get('r') and row.get('obj'):
+                        obj_by_region[row['r']] = row['obj']
+        except Exception:
+            pass
+
+    # ── Count MTD sales: separate retail from fleet/internal/enterprise ──
     region_mtd = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
+    nonretail_mtd = {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0}
     dealer_data = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'total': 0,
                                         'pm': 0, 'py': 0, 'cvp': 0, 'market': ''})
 
@@ -319,14 +356,20 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
         ho_ym = r['ho_date'].strftime('%Y-%m')
         mkt = r['market'] or 'Unknown'
         dk = r['dealer_upper']
+        bt = r.get('bt_cat', 'Retail')
 
         if not dealer_data[dk]['market']:
             dealer_data[dk]['market'] = mkt
 
         if ho_ym == cur_month:
-            region_mtd[mkt][r['body']] += 1
-            if r['is_cvp']:
-                region_mtd[mkt]['cvp'] += 1
+            if bt != 'Retail':
+                nonretail_mtd[r['body']] += 1
+                if r['is_cvp']:
+                    nonretail_mtd['cvp'] += 1
+            else:
+                region_mtd[mkt][r['body']] += 1
+                if r['is_cvp']:
+                    region_mtd[mkt]['cvp'] += 1
             dealer_data[dk][r['body']] += 1
             dealer_data[dk]['total'] += 1
             if r['is_cvp']:
@@ -342,22 +385,24 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
         ws.append([''] * 20)
 
     # ── Regional summary rows 6-13 ──
-    total_all = sum(d['sw'] + d['qm'] + d['svo'] for d in region_mtd.values())
     total = {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0, 'obj': 0}
 
-    # Debug: show what we counted
-    print(f"  [RS Debug] cur_month={cur_month}, total_all={total_all}")
-    for mkt, d in region_mtd.items():
-        print(f"  [RS Debug] region_mtd[{mkt}] = sw={d['sw']} qm={d['qm']} svo={d['svo']}")
-    print(f"  [RS Debug] dealer_data has {sum(1 for d in dealer_data.values() if d['total']>0)} dealers with MTD data")
+    retail_total = sum(d['sw'] + d['qm'] + d['svo'] for d in region_mtd.values())
+    nr_total = nonretail_mtd['sw'] + nonretail_mtd['qm'] + nonretail_mtd['svo']
+    grand_total = retail_total + nr_total
+
+    print(f"  [RS] MTD: retail={retail_total}, non-retail={nr_total}, total={grand_total}")
 
     for region in region_order:
-        d = region_mtd.get(region, {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
+        if region == 'Internal/Fleet/Rental':
+            d = nonretail_mtd
+        else:
+            d = region_mtd.get(region, {'sw': 0, 'qm': 0, 'svo': 0, 'cvp': 0})
+
         sw, qm, svo, cvp_n = d['sw'], d['qm'], d['svo'], d['cvp']
         t = sw + qm + svo
         obj = obj_by_region.get(region, 0)
         po = (t / obj) if obj > 0 else 0
-        mx = (t / total_all) if total_all > 0 else 0
 
         row = [''] * 20
         row[2] = region
@@ -367,15 +412,13 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
         row[6] = t
         row[7] = obj
         row[8] = po
-        row[9] = mx
+        row[9] = (t / grand_total) if grand_total > 0 else 0
         row[15] = cvp_n
         ws.append(row)
 
-        for k in ('sw', 'qm', 'svo', 'cvp'):
-            total[k] += d.get(k, 0)
-        total['obj'] += obj
+        total['sw'] += sw; total['qm'] += qm; total['svo'] += svo
+        total['cvp'] += cvp_n; total['obj'] += obj
 
-    # Pad remaining rows to index 12 (Total at 13)
     while ws.max_row < 13:
         ws.append([''] * 20)
 
@@ -396,9 +439,9 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None):
     while ws.max_row < 22:
         ws.append([''] * 20)
 
-    # ── MTD_DLR rows 22+ by region ──
-    for region in region_order:
-        # Region header row: col[1]=region name, col[2]=empty
+    # ── MTD_DLR rows 22+ ──
+    dealer_regions = ['Central', 'Western', 'Mexico', 'Southeast', 'Northeast', 'Canada']
+    for region in dealer_regions:
         row = [''] * 20
         row[1] = region
         ws.append(row)
