@@ -317,7 +317,8 @@ function AdminDataUpload(){
 
   const pullGA4=async()=>{setGa4Loading(true);setGa4Status(null);try{const r=await API.post('/api/admin/pull-ga4?days=90',{});setGa4Status(r)}catch(e){setGa4Status({error:e.message})}finally{setGa4Loading(false);API.get('/api/admin/data-sources').then(setSources)}};
 
-  const rebuildAll=async()=>{toast('Rebuilding all dashboards...','info');try{const r=await API.post('/api/admin/rebuild-all',{});if(r.status==='success')toast('All dashboards rebuilt!','success');else toast('Error: '+(r.error||'Unknown'),'error')}catch(e){toast('Rebuild failed','error')}};
+  const[rebuildLoading,setRebuildLoading]=useState(false);const[rebuildResult,setRebuildResult]=useState(null);
+  const doRebuild=async()=>{setRebuildLoading(true);setRebuildResult(null);toast('Rebuilding all dashboards from source files...','info');try{const r=await API.post('/api/admin/rebuild-all',{});setRebuildResult(r);if(r.status==='success'){toast(`Dashboard rebuilt! ${r.vehicle_count?.toLocaleString()||0} vehicles processed.`,'success')}else{toast('Error: '+(r.error||'Unknown'),'error')}}catch(e){setRebuildResult({error:e.message});toast('Rebuild failed: '+e.message,'error')}finally{setRebuildLoading(false)}};
 
   const freshColor=(s)=>s==='green'?'#2E7D32':s==='yellow'?'#F9A825':s==='red'?'#C4281D':'#9F9F9F';
   const freshBg=(s)=>s==='green'?'#E8F5E9':s==='yellow'?'#FFF8E1':s==='red'?'#FFEBE9':'#F5F5F5';
@@ -327,12 +328,12 @@ function AdminDataUpload(){
       <div><h2 className="text-xl font-bold">Data Sources</h2><p className="text-xs text-ineos-iron-smoke mt-1">Upload raw source files to refresh all dashboards. No more Master File needed.</p></div>
     </div>
 
-    <div className="rounded-xl p-5 mb-6" style={{background:'#E8F5E9',borderLeft:'4px solid #2E7D32'}}>
+    <div className="rounded-xl p-4 mb-6" style={{background:'#F5F5F5',borderLeft:'4px solid #9E9E9E'}}>
       <div className="flex items-center justify-between mb-2">
-        <span className="font-semibold text-base" style={{fontFamily:'var(--ids-font-heading)'}}>Master File Upload</span>
-        <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,0.7)',color:'#2E7D32'}}>PRIMARY</span>
+        <span className="font-semibold text-sm" style={{fontFamily:'var(--ids-font-heading)',color:'#666'}}>Master File Upload (Legacy)</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(0,0,0,0.06)',color:'#999'}}>OPTIONAL</span>
       </div>
-      <p className="text-xs text-ineos-iron-smoke mb-2">Upload the Master File V14 (.xlsb) to refresh the Americas Dashboard, Allocation Tool, and Platform data. This is the primary daily update.</p>
+      <p className="text-xs text-ineos-iron-smoke mb-2">Forwards Master File to Dashboard & Allocation apps. Use individual source uploads + Rebuild All instead.</p>
       {lastMaster&&<p className="text-xs text-green-700 mb-2">Last upload: {new Date(lastMaster).toLocaleString()}</p>}
       <div className="flex items-center gap-3">
         <input type="file" id="master-file" accept=".xlsb,.xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])setMasterFile(e.target.files[0]);e.target.value=''}}/>
@@ -343,7 +344,17 @@ function AdminDataUpload(){
       {masterResult?.error&&<p className="mt-2 text-xs text-red-600">{masterResult.error}</p>}
     </div>
 
-    <h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">Individual Source Files (Future Data Hub)</h3>
+    <div className="rounded-xl p-5 mb-6 flex items-center justify-between" style={{background:'#1A1A2E',borderLeft:'4px solid #FF4639'}}>
+      <div>
+        <span className="font-semibold text-base text-white" style={{fontFamily:'var(--ids-font-heading)'}}>Rebuild All Dashboards</span>
+        <p className="text-xs mt-1" style={{color:'#aaa'}}>Generate the Americas Dashboard from all uploaded source files above. No Master File needed.</p>
+        {rebuildResult&&rebuildResult.status==='success'&&<p className="text-xs text-green-400 mt-1">✓ Dashboard rebuilt — {rebuildResult.vehicle_count?.toLocaleString()||0} vehicles • {new Date(rebuildResult.timestamp).toLocaleString()}</p>}
+        {rebuildResult&&rebuildResult.error&&<p className="text-xs text-red-400 mt-1">✗ {rebuildResult.error}</p>}
+      </div>
+      <button onClick={doRebuild} disabled={rebuildLoading} className="px-6 py-3 rounded-lg text-sm font-bold text-white disabled:opacity-50 transition-all hover:scale-105" style={{background:'linear-gradient(135deg,#FF4639,#D4342A)',boxShadow:'0 4px 14px rgba(255,70,57,0.4)'}}>{rebuildLoading?'Rebuilding...':'⚡ Rebuild All'}</button>
+    </div>
+
+    <h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">Individual Source Files</h3>
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {CARDS.map(card=>{
         const s=sources[card.id]||{};
