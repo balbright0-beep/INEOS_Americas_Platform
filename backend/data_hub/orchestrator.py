@@ -1,7 +1,12 @@
-"""Data Hub Orchestrator — routes files, manages state, triggers rebuilds."""
+"""Data Hub Orchestrator — routes files, manages state, triggers rebuilds.
+
+Rebuild strategy:
+  Individual source uploads → cached as parquet → assembled into temp xlsx
+  → original dashboard_refresh_all_in_one.py processor runs against it
+  → Dashboard HTML generated with all 35+ constants → served at /dashboard
+"""
 import os
 import json
-import pickle
 from datetime import datetime
 
 from data_hub.file_router import detect_file_type, SOURCE_INFO
@@ -12,14 +17,6 @@ from data_hub.ingest.c4c_leads import ingest_c4c_leads
 from data_hub.ingest.santander import ingest_santander, update_santander_cache
 from data_hub.ingest.urban_science import ingest_urban_science
 from data_hub.ingest.ga4 import ingest_ga4
-from data_hub.enrichment import enrich
-from data_hub.dashboard_generator import generate_dashboard
-from data_hub.compute.engine import (
-    compute_retail_sales, compute_dpd, compute_pipeline,
-    compute_inventory, compute_historical_sales, compute_vex,
-    compute_lead_kpis, compute_brand_leads, compute_santander,
-    compute_scorecard, compute_objectives
-)
 
 
 class DataHub:
@@ -164,92 +161,68 @@ class DataHub:
         return result
 
     def rebuild_dashboard(self):
-        """Full dashboard rebuild from all available cached data."""
-        today = datetime.now()
-        errors = []
-        compute_results = {}
+        """Full dashboard rebuild from uploaded source files.
 
-        # Load cached data
-        sap = self._load_data('sap_export')
-        if sap is None:
+        Uses the Bridge approach:
+        1. Assembles a temporary xlsx from cached source DataFrames
+        2. Runs the original dashboard_refresh_all_in_one.py processor against it
+        3. The processor generates the Dashboard HTML with all 35+ constants
+
+        This eliminates the need for the Master File — individual source
+        uploads produce the same output as the original workflow.
+        """
+        # Verify minimum data exists
+        if not self._has_data('sap_export'):
             return {'error': 'SAP Export not uploaded yet. Upload at least the SAP Vehicle Export to rebuild.'}
 
-        handover = self._load_data('handover')
-        stock_pipeline = self._load_data('stock_pipeline')
-        leads = self._load_data('leads')
-        urban_science = self._load_data('urban_science')
-        sales_order = self._load_data('sales_order')
-        campaign_codes = self._load_data('campaign_codes')
-        incentive_spend = self._load_data('incentive_spend')
-        qm_leads = self._load_data('qm_leads')
+        if not os.path.exists(self.template_path):
+            return {'error': f'Dashboard template not found at {self.template_path}'}
 
-        # Enrich
+        output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
+
         try:
-            enriched = enrich(sap, handover, stock_pipeline, urban_science,
-                            sales_order, campaign_codes, incentive_spend, qm_leads,
-                            self.ref_db_path)
+            from data_hub.dashboard_bridge import generate_dashboard_from_sources
+
+            result = generate_dashboard_from_sources(
+                cache_dir=self.cache_dir,
+                template_path=self.template_path,
+                output_path=output_html,
+            )
+
+            # Also update the Platform's own vehicle database
+            try:
+                self._update_platform_db()
+            except Exception as e:
+                result.setdefault('warnings', []).append(f'Platform DB update: {e}')
+
+            return result
+
         except Exception as e:
-            return {'error': f'Enrichment failed: {e}'}
+            import traceback
+            traceback.print_exc()
+            return {'status': 'error', 'error': str(e)}
 
-        # Compute
-        funcs = [
-            ('retail_sales', lambda: compute_retail_sales(enriched, self.ref_db_path, today)),
-            ('dpd', lambda: compute_dpd(enriched, leads, today)),
-            ('pipeline', lambda: compute_pipeline(enriched)),
-            ('inventory', lambda: compute_inventory(enriched)),
-            ('historical', lambda: compute_historical_sales(enriched)),
-            ('vex', lambda: compute_vex(enriched)),
-            ('scorecard', lambda: compute_scorecard(enriched, leads, self.ref_db_path, today)),
-            ('objectives', lambda: compute_objectives(self.ref_db_path, today)),
-        ]
+    def _update_platform_db(self):
+        """Update the Platform's SQLAlchemy vehicle database from cached source data.
+        This keeps the dealer portal data in sync with the dashboard."""
+        sap = self._load_data('sap_export')
+        if sap is None:
+            return
 
-        if leads is not None:
-            funcs.append(('lead_kpis', lambda: compute_lead_kpis(leads, today)))
-            funcs.append(('brand_leads', lambda: compute_brand_leads(leads, today)))
-
-        sant_cache_path = self.santander_cache_path
-        if os.path.exists(os.path.join(self.cache_dir, 'santander_latest.json')):
-            with open(os.path.join(self.cache_dir, 'santander_latest.json')) as f:
-                sant_data = json.load(f)
-            sant_cache = {}
-            if os.path.exists(sant_cache_path):
-                with open(sant_cache_path) as f:
-                    sant_cache = json.load(f)
-            funcs.append(('santander', lambda: compute_santander(sant_data, sant_cache)))
-
-        for name, func in funcs:
+        # The Platform's own processor handles DB updates
+        # This is called after the dashboard is generated
+        try:
+            from data_hub.master_assembler import assemble_master_xlsx
+            xlsx_path = assemble_master_xlsx(self.cache_dir)
             try:
-                compute_results[name] = func()
-            except Exception as e:
-                errors.append(f'{name}: {e}')
-                compute_results[name] = {}
-
-        # Save compute cache
-        cache_path = os.path.join(self.cache_dir, 'last_compute.json')
-        with open(cache_path, 'w') as f:
-            json.dump(compute_results, f, default=str)
-
-        # Serve Dashboard HTML from template (preserves existing Master File data)
-        dashboard_result = None
-        if os.path.exists(self.template_path):
-            try:
-                output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
-                import shutil
-                os.makedirs(os.path.dirname(output_html), exist_ok=True)
-                shutil.copy2(self.template_path, output_html)
-                dashboard_result = {
-                    'output_path': output_html,
-                    'file_size': os.path.getsize(output_html),
-                    'note': 'Dashboard served from template with existing data. For full refresh, upload Master File to Dashboard App.',
-                }
-            except Exception as e:
-                errors.append(f'Dashboard copy: {e}')
-
-        return {
-            'status': 'success',
-            'computed': list(compute_results.keys()),
-            'errors': errors,
-            'vehicle_count': len(enriched),
-            'timestamp': today.isoformat(),
-            'dashboard': dashboard_result,
-        }
+                from app.processor import process_master_file
+                process_master_file(xlsx_path)
+            except ImportError:
+                pass  # processor not available in this context
+            finally:
+                try:
+                    os.unlink(xlsx_path)
+                except OSError:
+                    pass
+        except Exception:
+            pass  # Non-critical — dealer portal data may be stale
