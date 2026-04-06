@@ -348,15 +348,19 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
 
         # Bill-to dealer — from Sales Order, with channel-based fallback
         # The processor classifies "Fleet", "Internal", "Enterprise" as non-retail
+        # Master File channel→bill-to mapping (from actual data analysis):
+        #   STOCK, PRIVATE - RETAILER → dealer name (Retail)
+        #   COURTESY CAR, RENTAL, LEASING, SME, BUSINESS, ICO, DEMO → Fleet
+        #   INTERNAL FLEET → Internal
+        #   EMPLOYEE → Enterprise
         bill_to = billto_map.get(vin, '')
         if not bill_to:
-            # Fallback: derive from SAP channel if no sales order data
             ch = channel.upper()
-            if any(x in ch for x in ('FLEET', 'RENTAL')):
+            if ch in ('COURTESY CAR', 'RENTAL', 'LEASING', 'SME', 'BUSINESS', 'ICO', 'DEMO'):
                 bill_to = 'Fleet'
-            elif any(x in ch for x in ('INTERNAL', 'EMPLOYEE')):
+            elif ch == 'INTERNAL FLEET' or ch == 'INTERNAL':
                 bill_to = 'Internal'
-            elif 'ENTERPRISE' in ch or 'IECP' in ch:
+            elif ch == 'EMPLOYEE':
                 bill_to = 'Enterprise'
             else:
                 bill_to = 'Not Handed Over'

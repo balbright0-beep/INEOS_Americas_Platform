@@ -41,22 +41,29 @@ LEADS_COLUMNS = {
 
 
 def ingest_c4c_leads(filepath):
-    """Parse C4C Leads file. Uses raw XML extraction to avoid openpyxl type conversion bugs."""
-    # Approach: extract shared strings + sheet data directly from the xlsx ZIP
-    # This bypasses openpyxl's cell type inference entirely
+    """Parse C4C Leads file. Uses shared raw XML parser for inlineStr + missing r= support."""
+    from data_hub.utils import parse_xlsx_raw
+
+    def _find_header(rows):
+        for i, row in enumerate(rows[:10]):
+            row_str = ' '.join(str(v) for v in row if v).lower()
+            if 'lead id' in row_str or 'lead' in row_str and 'retailer' in row_str:
+                return i
+        return 0
+
     try:
-        return _parse_xlsx_raw(filepath)
+        df = parse_xlsx_raw(filepath, find_header_fn=_find_header)
+        return _process_leads(df)
     except Exception as e1:
-        # Fallback: try pandas with different engines
-        for engine in ['openpyxl']:
-            for skip in range(6):
-                try:
-                    df = pd.read_excel(filepath, skiprows=skip, engine=engine, dtype=str)
-                    cols_str = ' '.join(str(c) for c in df.columns)
-                    if 'Lead' in cols_str or 'lead' in cols_str:
-                        return _process_leads(df)
-                except Exception:
-                    continue
+        # Fallback: try pandas
+        for skip in range(6):
+            try:
+                df = pd.read_excel(filepath, skiprows=skip, engine='openpyxl', dtype=str)
+                cols_str = ' '.join(str(c) for c in df.columns)
+                if 'Lead' in cols_str or 'lead' in cols_str:
+                    return _process_leads(df)
+            except Exception:
+                continue
         raise RuntimeError(f"Could not parse C4C Leads file: {e1}")
 
 
@@ -101,6 +108,19 @@ def _parse_xlsx_raw(filepath):
                         val = shared_strings[int(val)]
                     except (ValueError, IndexError):
                         pass
+                elif cell_type == 'inlineStr':
+                    # Inline string: value is in <is><t> not <v>
+                    is_el = cell.find('.//s:is/s:t', ns)
+                    if is_el is not None and is_el.text:
+                        val = is_el.text
+                    else:
+                        # Try without namespace
+                        is_el = cell.find('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is/{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                        if is_el is not None and is_el.text:
+                            val = is_el.text
+                elif cell_type == 'str':
+                    # Formula string: value is already in val
+                    pass
 
                 # Extract column letter
                 col = re.match(r'([A-Z]+)', ref)

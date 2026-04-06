@@ -6,9 +6,19 @@ import re
 
 
 def ingest_sales_order(filepath):
-    """Parse Sales Order Report using raw XML extraction."""
+    """Parse Sales Order Report using shared raw XML parser."""
+    from data_hub.utils import parse_xlsx_raw
+
+    def _find_header(rows):
+        for i, row in enumerate(rows[:10]):
+            row_str = ' '.join(str(v) for v in row if v).lower()
+            if 'sales order' in row_str or 'vehicle vin' in row_str or 'bill' in row_str:
+                return i
+        return 0
+
     try:
-        return _parse_xlsx_raw(filepath)
+        df = parse_xlsx_raw(filepath, find_header_fn=_find_header)
+        return _process(df)
     except Exception as e1:
         # Fallback: pandas with dtype=str
         try:
@@ -57,6 +67,17 @@ def _parse_xlsx_raw(filepath):
                         val = shared_strings[int(val)]
                     except (ValueError, IndexError):
                         pass
+                elif cell_type == 'inlineStr':
+                    # Inline string: value is in <is><t> not <v>
+                    is_el = cell.find('.//s:is/s:t', ns)
+                    if is_el is not None and is_el.text:
+                        val = is_el.text
+                    else:
+                        is_el = cell.find('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is/{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                        if is_el is not None and is_el.text:
+                            val = is_el.text
+                elif cell_type == 'str':
+                    pass
 
                 col = re.match(r'([A-Z]+)', ref)
                 if col:
