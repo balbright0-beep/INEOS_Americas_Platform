@@ -57,10 +57,22 @@ def _process(df):
 
     # Detect format
     if 'Vehicle VIN' in cols or any('Vehicle VIN' in str(c) for c in cols):
-        # Traditional SAP Handover format
+        # Traditional SAP Handover format — use exact matching first
         rename = {}
+        # First pass: exact matches
+        for actual_col in df.columns:
+            col_str = str(actual_col).strip()
+            if col_str == 'Vehicle VIN':
+                rename[actual_col] = 'vin'
+            elif col_str == 'Count of Vehicle VIN':
+                rename[actual_col] = 'vin_count'
+        # Second pass: partial matches for remaining columns
         for src_col, int_col in HANDOVER_COLUMNS.items():
+            if int_col in rename.values():
+                continue  # Already mapped
             for actual_col in df.columns:
+                if actual_col in rename:
+                    continue  # Already mapped
                 if src_col in str(actual_col):
                     rename[actual_col] = int_col
                     break
@@ -91,6 +103,10 @@ def _process(df):
     # VIN handling
     if 'vin' in df.columns:
         df['vin'] = df['vin'].astype(str).str.strip().str.upper()
+        print(f"  VIN sample before filter: {df['vin'].head(5).tolist()}")
+        print(f"  VIN lengths: {df['vin'].str.len().value_counts().head(5).to_dict()}")
+        # Filter out empty/nan VINs but keep real ones
+        df = df[~df['vin'].isin(['', 'NAN', 'NONE', 'NULL'])]
         df = df[df['vin'].str.len() > 3]
     elif 'order_no' in df.columns:
         # No VIN column — keep all rows, they'll be joined by order_no
