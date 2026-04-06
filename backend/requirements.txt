@@ -8,7 +8,10 @@ httpx
 msoffcrypto-tool
 pyxlsb
 pandas
+numpy
 pyarrow
+openpyxl
+python-dateutil
 google-analytics-data
 google-auth
 google-auth-oauthlib

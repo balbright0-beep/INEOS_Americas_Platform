@@ -256,6 +256,8 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
 
     try:
         # Route to Data Hub for processing
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from data_hub.file_router import detect_file_type
         from data_hub.orchestrator import DataHub
 
@@ -295,13 +297,15 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
 async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db)):
     """Trigger full rebuild of all dashboards from cached source data."""
     try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from data_hub.orchestrator import DataHub
         hub = DataHub(cache_dir='cache', ref_db_path='reference/reference.db')
         result = hub.rebuild_dashboard()
         audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles")
         return result
-    except ImportError:
-        return {"status": "error", "error": "Data Hub not connected. Upload source files first."}
+    except ImportError as e:
+        return {"status": "error", "error": f"Data Hub not connected: {e}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
