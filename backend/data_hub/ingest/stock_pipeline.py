@@ -32,8 +32,21 @@ def _ingest_xlsb(filepath):
 
 
 def _ingest_xlsx(filepath):
-    """Parse .xlsx format using openpyxl."""
+    """Parse .xlsx format using openpyxl. Handles duplicate column names."""
     df = pd.read_excel(filepath, sheet_name='Data', header=1, engine='openpyxl')
+    # Deduplicate column names by appending suffix
+    cols = list(df.columns)
+    seen = {}
+    new_cols = []
+    for c in cols:
+        c_str = str(c)
+        if c_str in seen:
+            seen[c_str] += 1
+            new_cols.append(f"{c_str}.{seen[c_str]}")
+        else:
+            seen[c_str] = 0
+            new_cols.append(c_str)
+    df.columns = new_cols
     return _process_sp(df)
 
 
