@@ -1,6 +1,5 @@
 """SAP Handover Report ingest handler."""
 import pandas as pd
-from data_hub.utils import parse_date_flexible
 
 HANDOVER_COLUMNS = {
     'Ship to Party No': 'ship_to_party',
@@ -24,8 +23,12 @@ DATE_COLS = ['retail_date', 'registration_date', 'handover_date', 'rev_rec_date'
 
 
 def ingest_handover(filepath):
-    """Parse SAP Handover Report into normalized DataFrame, indexed by VIN."""
-    df = pd.read_excel(filepath, engine='openpyxl')
+    """Parse SAP Handover Report into normalized DataFrame."""
+    # Read all data as strings first to avoid type conversion issues
+    df = pd.read_excel(filepath, engine='openpyxl', dtype=str)
+
+    print(f"  Handover raw: {len(df)} rows, {len(df.columns)} cols")
+    print(f"  Columns: {list(df.columns)[:10]}...")
 
     # Rename columns (partial match)
     rename = {}
@@ -36,14 +39,17 @@ def ingest_handover(filepath):
                 break
     df = df.rename(columns=rename)
 
-    # Parse date columns
+    # Parse date columns safely
     for col in DATE_COLS:
         if col in df.columns:
-            df[col] = df[col].apply(parse_date_flexible)
+            df[col] = pd.to_datetime(df[col], errors='coerce')
 
-    # VIN to uppercase string
+    # VIN to uppercase string — keep ALL rows, don't deduplicate
+    # (deduplication can happen later during enrichment)
     if 'vin' in df.columns:
         df['vin'] = df['vin'].astype(str).str.strip().str.upper()
-        df = df.drop_duplicates(subset='vin', keep='last')
+        # Only drop rows where VIN is truly empty
+        df = df[df['vin'].str.len() > 3]
 
+    print(f"  Handover processed: {len(df)} rows")
     return df
