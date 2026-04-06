@@ -129,6 +129,18 @@ class RegionalSales(Base):
     cvp = Column(Integer, default=0)
 
 
+# ===== MONTHLY OBJECTIVES (editable via admin) =====
+
+class MonthlyObjective(Base):
+    """Monthly sales objectives by region — editable via admin UI."""
+    __tablename__ = "monthly_objectives"
+    id = Column(Integer, primary_key=True)
+    region = Column(String, nullable=False, index=True)  # 'Internal/Fleet/Rental', 'Central', 'Western', etc.
+    month = Column(Integer, nullable=False)  # 1-12
+    target = Column(Integer, default=0)
+    updated_at = Column(DateTime, server_default=func.now())
+
+
 # ===== PERSISTENT CACHE (survives Render deploys) =====
 
 class CachedFile(Base):

@@ -263,9 +263,8 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             hd = ho.get('handover_date', None) if isinstance(ho, dict) else getattr(ho, 'handover_date', None)
             ho_date = _safe_date(hd)
 
-        # Fallback: invoice date from SAP
-        if ho_date is None:
-            ho_date = _safe_date(r.get('invoice_date', None))
+        # NO fallback to invoice_date — the Master File only uses handover dates
+        # from the Handover Report for column 51. Invoice dates would inflate counts.
 
         # Market
         # Use mkt_map (from template/hardcoded) FIRST, not SAP's market_area which is "AMERICAS"
@@ -327,9 +326,29 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
     region_order = ['Internal/Fleet/Rental', 'Central', 'Western', 'Mexico',
                     'Southeast', 'Northeast', 'Canada']
 
-    # Extract per-region objectives from template RS constant
+    # Load per-region objectives from DB first, then template as fallback
+    cur_month_num = today.month  # 1-12
     obj_by_region = {}
-    if template_path and os.path.exists(template_path):
+
+    # Try DB (editable via admin UI)
+    try:
+        from app.database import SessionLocal
+        from app.models import MonthlyObjective
+        db = SessionLocal()
+        try:
+            rows = db.query(MonthlyObjective).filter(MonthlyObjective.month == cur_month_num).all()
+            for r in rows:
+                if r.target > 0:
+                    obj_by_region[r.region] = r.target
+            if obj_by_region:
+                print(f"  [RS] Objectives from DB for month {cur_month_num}: {obj_by_region}")
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Fallback: extract from template RS constant
+    if not obj_by_region and template_path and os.path.exists(template_path):
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 html = f.read()
@@ -338,6 +357,7 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
                 for row in json.loads(m.group(1)):
                     if row.get('r') and row.get('obj'):
                         obj_by_region[row['r']] = row['obj']
+                print(f"  [RS] Objectives from template: {obj_by_region}")
         except Exception:
             pass
 

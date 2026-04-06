@@ -118,7 +118,7 @@ function InternalHub({user}){
   useEffect(()=>{API.get('/api/bulletins').then(setBulletins).catch(()=>{})},[]);
   const isAdmin=user.role==='admin';
   const nav=[['tools','Tools'],['bulletins','Bulletins']];
-  if(isAdmin)nav.push(['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload']);
+  if(isAdmin)nav.push(['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload'],['admin-objectives','Objectives']);
 
   return <div className="ids-layout" style={{minHeight:'100vh'}}>
     <aside className="ids-sidebar">
@@ -132,7 +132,7 @@ function InternalHub({user}){
           {[['tools','Tools'],['bulletins','Bulletins']].map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`ids-nav-item ${page===k?'active':''}`}>{l}</button>)}
         </div>
         {isAdmin&&<div className="ids-nav-group"><div className="ids-nav-group-label">Admin</div>
-          {[['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload']].map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`ids-nav-item ${page===k?'active':''}`}>{l}</button>)}
+          {[['dealer-preview','Dealer Preview'],['admin-users','Users'],['admin-bulletins','Manage Bulletins'],['admin-links','Manage Links'],['admin-data','Data Upload'],['admin-objectives','Objectives']].map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`ids-nav-item ${page===k?'active':''}`}>{l}</button>)}
         </div>}
       </nav>
       <div className="ids-sidebar-footer"><button onClick={()=>API.logout()} style={{background:'none',border:'none',color:'inherit',cursor:'pointer',fontSize:'12px'}}>Sign Out</button></div>
@@ -145,6 +145,7 @@ function InternalHub({user}){
       {page==='admin-bulletins'&&<AdminBulletins/>}
       {page==='admin-links'&&<AdminLinks/>}
       {page==='admin-data'&&<AdminDataUpload/>}
+      {page==='admin-objectives'&&<AdminObjectives/>}
     </main>
   </div>;
 }
@@ -396,6 +397,41 @@ function AdminDataUpload(){
 }
 
 /* ===== DEALER HUB ===== */
+function AdminObjectives(){
+  const REGIONS=['Internal/Fleet/Rental','Central','Western','Mexico','Southeast','Northeast','Canada'];
+  const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const[data,setData]=useState({});const[saving,setSaving]=useState(false);const[msg,setMsg]=useState('');
+  useEffect(()=>{API.get('/api/admin/objectives').then(d=>{
+    const init={};REGIONS.forEach(r=>{init[r]=d[r]||Array(12).fill(0)});setData(init);
+  }).catch(()=>{const init={};REGIONS.forEach(r=>{init[r]=Array(12).fill(0)});setData(init)})},[]);
+  const update=(region,month,val)=>{setData(d=>{const n={...d};n[region]=[...n[region]];n[region][month]=parseInt(val)||0;return n})};
+  const save=async()=>{setSaving(true);setMsg('');try{await API.post('/api/admin/objectives',data);setMsg('Saved! Rebuild dashboard to apply.')}catch(e){setMsg('Error: '+e.message)}finally{setSaving(false)}};
+  const total=REGIONS.reduce((acc,r)=>{const row=data[r]||[];return acc.map((v,i)=>v+(row[i]||0))},[0,0,0,0,0,0,0,0,0,0,0,0]);
+  return <div>
+    <div className="flex items-center justify-between mb-4">
+      <div><h2 className="text-xl font-bold">Monthly Objectives</h2><p className="text-xs text-ineos-iron-smoke mt-1">Set monthly sales targets by region. Click Save, then Rebuild All to apply.</p></div>
+      <div className="flex items-center gap-3">
+        {msg&&<span className={`text-xs ${msg.includes('Error')?'text-red-600':'text-green-600'}`}>{msg}</span>}
+        <button onClick={save} disabled={saving} className="px-4 py-2 rounded text-sm font-medium text-white disabled:opacity-50" style={{background:'#FF4639'}}>{saving?'Saving...':'Save Objectives'}</button>
+      </div>
+    </div>
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs border-collapse">
+        <thead><tr className="bg-gray-100"><th className="p-2 text-left border font-semibold" style={{minWidth:180}}>Region</th>{MONTHS.map(m=><th key={m} className="p-2 text-center border font-semibold" style={{minWidth:60}}>{m}</th>)}</tr></thead>
+        <tbody>
+          {REGIONS.map(region=><tr key={region} className="hover:bg-gray-50">
+            <td className="p-2 border font-medium text-sm">{region}</td>
+            {(data[region]||Array(12).fill(0)).map((val,mi)=><td key={mi} className="p-1 border">
+              <input type="number" value={val} onChange={e=>update(region,mi,e.target.value)} className="w-full p-1 text-center text-xs border rounded" style={{maxWidth:60}}/>
+            </td>)}
+          </tr>)}
+          <tr className="bg-gray-100 font-bold"><td className="p-2 border">Total</td>{total.map((v,i)=><td key={i} className="p-2 text-center border">{v}</td>)}</tr>
+        </tbody>
+      </table>
+    </div>
+  </div>;
+}
+
 function DealerHub({user}){
   const[page,setPage]=useState('overview');const[bulletins,setBulletins]=useState([]);const[links,setLinks]=useState([]);const[lastUpdate,setLastUpdate]=useState(null);
   useEffect(()=>{

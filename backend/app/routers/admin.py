@@ -3,7 +3,7 @@ import httpx
 import csv
 import io
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import User, AppState, AuditLog, UploadHistory, MonthlySnapshot, DealerPerformance, RetailSale, Vehicle
@@ -439,6 +439,44 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             os.unlink(tmp.name)
         except OSError:
             pass
+
+
+# --- Monthly Objectives ---
+@router.get("/objectives")
+def get_objectives(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Get all monthly objectives by region."""
+    from app.models import MonthlyObjective
+    rows = db.query(MonthlyObjective).all()
+    result = {}
+    for r in rows:
+        if r.region not in result:
+            result[r.region] = [0] * 12
+        if 1 <= r.month <= 12:
+            result[r.region][r.month - 1] = r.target
+    return result
+
+
+@router.post("/objectives")
+async def set_objectives(request: Request, admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Set monthly objectives. Body: {region: [jan, feb, ..., dec], ...}"""
+    from app.models import MonthlyObjective
+    data = await request.json()
+    for region, targets in data.items():
+        if not isinstance(targets, list) or len(targets) != 12:
+            continue
+        for month_idx, target in enumerate(targets):
+            month = month_idx + 1
+            existing = db.query(MonthlyObjective).filter(
+                MonthlyObjective.region == region,
+                MonthlyObjective.month == month
+            ).first()
+            if existing:
+                existing.target = int(target)
+                existing.updated_at = datetime.utcnow()
+            else:
+                db.add(MonthlyObjective(region=region, month=month, target=int(target)))
+    db.commit()
+    return {"status": "success"}
 
 
 # --- Rebuild All ---
