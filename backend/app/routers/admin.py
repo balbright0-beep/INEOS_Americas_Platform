@@ -255,28 +255,58 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
     tmp.close()
 
     try:
-        # Route to Data Hub for processing
+        # Direct ingest using source_id (skip auto-detection)
         import sys, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from data_hub.file_router import detect_file_type
-        from data_hub.orchestrator import DataHub
 
-        hub = DataHub(cache_dir='cache', ref_db_path='reference/reference.db')
-        result = hub.process_upload(tmp.name, file.filename)
+        row_count = 0
+        INGEST_MAP = {
+            'sap_export': ('data_hub.ingest.sap_export', 'ingest_sap_export'),
+            'sap_handover': ('data_hub.ingest.sap_handover', 'ingest_handover'),
+            'stock_pipeline': ('data_hub.ingest.stock_pipeline', 'ingest_stock_pipeline'),
+            'c4c_leads': ('data_hub.ingest.c4c_leads', 'ingest_c4c_leads'),
+            'santander': ('data_hub.ingest.santander', 'ingest_santander'),
+            'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
+        }
 
-        if result.get('status') == 'success':
-            # Update source status in DB
-            for key_suffix, val in [('_last', datetime.utcnow().isoformat()), ('_rows', str(result.get('rows', 0)))]:
-                state = db.query(AppState).filter(AppState.key == f"source_{source_id}{key_suffix}").first()
-                if not state:
-                    state = AppState(key=f"source_{source_id}{key_suffix}")
-                    db.add(state)
-                state.value = val
-            db.commit()
-            audit(db, "upload_source", admin.username, f"Uploaded {source_id}: {file.filename} ({result.get('rows',0)} rows)")
+        if source_id in INGEST_MAP:
+            mod_name, func_name = INGEST_MAP[source_id]
+            mod = __import__(mod_name, fromlist=[func_name])
+            ingest_fn = getattr(mod, func_name)
+            result_data = ingest_fn(tmp.name)
 
-        return result
-    except ImportError:
+            if isinstance(result_data, dict):
+                # Santander returns dict of lists
+                row_count = sum(len(v) for v in result_data.values() if isinstance(v, list))
+            else:
+                # DataFrame
+                row_count = len(result_data)
+
+            # Cache the data
+            cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache', 'data')
+            os.makedirs(cache_dir, exist_ok=True)
+            if hasattr(result_data, 'to_parquet'):
+                result_data.to_parquet(os.path.join(cache_dir, f'{source_id}.parquet'), index=False)
+            else:
+                import json
+                with open(os.path.join(cache_dir, f'{source_id}.json'), 'w') as f:
+                    json.dump(result_data, f, default=str)
+        else:
+            return {"status": "error", "error": f"Unknown source: {source_id}"}
+
+        # Update source status in DB
+        for key_suffix, val in [('_last', datetime.utcnow().isoformat()), ('_rows', str(row_count))]:
+            s = db.query(AppState).filter(AppState.key == f"source_{source_id}{key_suffix}").first()
+            if not s:
+                s = AppState(key=f"source_{source_id}{key_suffix}")
+                db.add(s)
+            s.value = val
+        db.commit()
+        audit(db, "upload_source", admin.username, f"Uploaded {source_id}: {file.filename} ({row_count} rows)")
+
+        return {"status": "success", "detected": source_id, "rows": row_count}
+
+    except ImportError as ie:
         # Fallback: just store the file and track the upload
         state = db.query(AppState).filter(AppState.key == f"source_{source_id}_last").first()
         if not state:
