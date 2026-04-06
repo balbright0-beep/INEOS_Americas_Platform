@@ -18,8 +18,8 @@ def _ingest_xlsb(filepath):
     from pyxlsb import open_workbook
     wb = open_workbook(filepath)
     rows = []
+    headers = None
     with wb.get_sheet("Data") as sheet:
-        headers = None
         for i, row in enumerate(sheet.rows()):
             vals = [c.v for c in row]
             if i == 1:
@@ -27,32 +27,50 @@ def _ingest_xlsb(filepath):
             elif i >= 2:
                 rows.append(vals)
 
+    if headers:
+        headers = _dedup_columns(headers)
     df = pd.DataFrame(rows, columns=headers if headers else None)
     return _process_sp(df)
 
 
 def _ingest_xlsx(filepath):
     """Parse .xlsx format using openpyxl. Handles duplicate column names."""
-    df = pd.read_excel(filepath, sheet_name='Data', header=1, engine='openpyxl')
-    # Deduplicate column names by appending suffix
-    cols = list(df.columns)
+    # Read without header first to get raw column names
+    try:
+        df_raw = pd.read_excel(filepath, sheet_name='Data', header=None, engine='openpyxl', nrows=3)
+        # Row 1 typically has headers
+        headers = [safe_str(v) for v in df_raw.iloc[1].values]
+        headers = _dedup_columns(headers)
+
+        # Read data starting from row 2
+        df = pd.read_excel(filepath, sheet_name='Data', header=None, skiprows=2, engine='openpyxl')
+        df.columns = headers[:len(df.columns)]
+    except Exception:
+        # Fallback: let pandas handle it
+        df = pd.read_excel(filepath, sheet_name='Data', header=1, engine='openpyxl')
+        df.columns = _dedup_columns([str(c) for c in df.columns])
+
+    return _process_sp(df)
+
+
+def _dedup_columns(cols):
+    """Deduplicate column names by appending .1, .2 suffix."""
     seen = {}
-    new_cols = []
+    result = []
     for c in cols:
-        c_str = str(c)
+        c_str = str(c).strip()
         if c_str in seen:
             seen[c_str] += 1
-            new_cols.append(f"{c_str}.{seen[c_str]}")
+            result.append(f"{c_str}.{seen[c_str]}")
         else:
             seen[c_str] = 0
-            new_cols.append(c_str)
-    df.columns = new_cols
-    return _process_sp(df)
+            result.append(c_str)
+    return result
 
 
 def _process_sp(df):
     """Filter to Americas and extract key columns."""
-    # Find region column (typically col 22 = 'REGION')
+    # Find region column
     region_col = None
     for col in df.columns:
         if 'REGION' in str(col).upper():
@@ -75,13 +93,15 @@ def _process_sp(df):
         'DERIVATIVE': 'derivative',
         'STOCK AGE FROM BUILD': 'stock_age',
         'Handover Complete Date': 'handover_complete_date',
+        'FOK DATE': 'fok_date',
     }
     for actual_col in df.columns:
         col_upper = str(actual_col).upper().strip()
         for key, val in col_map.items():
             if key.upper() in col_upper:
-                rename[actual_col] = val
-                break
+                if val not in rename.values():  # Avoid duplicate mappings
+                    rename[actual_col] = val
+                    break
     df = df.rename(columns=rename)
 
     # Parse shipping ETA
