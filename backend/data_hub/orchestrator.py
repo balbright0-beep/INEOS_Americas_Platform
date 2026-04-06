@@ -320,18 +320,18 @@ class DataHub:
         try:
             from data_hub.dashboard_bridge import generate_dashboard_from_sources
 
+            # List what files are available before building
+            data_dir = os.path.join(self.cache_dir, 'data')
+            available = os.listdir(data_dir) if os.path.isdir(data_dir) else []
+            print(f"  Available cached files: {available}")
+
             result = generate_dashboard_from_sources(
                 cache_dir=self.cache_dir,
                 template_path=self.template_path,
                 output_path=output_html,
             )
 
-            # Also update the Platform's own vehicle database
-            try:
-                self._update_platform_db()
-            except Exception as e:
-                result.setdefault('warnings', []).append(f'Platform DB update: {e}')
-
+            result['_cached_files'] = available
             return result
 
         except Exception as e:

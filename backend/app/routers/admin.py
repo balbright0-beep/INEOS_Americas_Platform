@@ -420,8 +420,8 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
             result = hub.rebuild_dashboard()
         build_log = log_buffer.getvalue()
 
-        # Add diagnostic info
-        result['_build_log'] = build_log[-3000:] if len(build_log) > 3000 else build_log
+        # Add diagnostic info — full log, no truncation
+        result['_build_log'] = build_log
         output_path = os.path.join(base, 'outputs', 'Americas_Daily_Dashboard.html')
         result['_debug'] = {
             'output_exists': os.path.exists(output_path),
