@@ -45,21 +45,125 @@ class DataHub:
     def _save_status(self):
         with open(self.status_path, 'w') as f:
             json.dump(self.upload_status, f, indent=2, default=str)
+        # Persist to DB
+        try:
+            status_bytes = json.dumps(self.upload_status, default=str).encode('utf-8')
+            self._save_to_db('_upload_status', status_bytes, 0)
+        except Exception:
+            pass
 
     def _store_data(self, key, df):
-        """Store DataFrame to cache as parquet."""
+        """Store DataFrame to cache as parquet on disk AND in PostgreSQL."""
         path = os.path.join(self.cache_dir, 'data', f'{key}.parquet')
         df.to_parquet(path, index=False)
 
+        # Also persist to PostgreSQL so data survives Render deploys
+        try:
+            with open(path, 'rb') as f:
+                parquet_bytes = f.read()
+            self._save_to_db(key, parquet_bytes, len(df))
+        except Exception as e:
+            print(f"  Warning: could not persist {key} to DB: {e}")
+
     def _load_data(self, key):
-        """Load DataFrame from cache."""
+        """Load DataFrame from cache (disk first, DB fallback)."""
+        import pandas as pd
         path = os.path.join(self.cache_dir, 'data', f'{key}.parquet')
         if os.path.exists(path):
-            return __import__('pandas').read_parquet(path)
+            return pd.read_parquet(path)
+        # Fallback: restore from PostgreSQL
+        restored = self._restore_from_db(key)
+        if restored:
+            return pd.read_parquet(path)
         return None
 
     def _has_data(self, key):
-        return os.path.exists(os.path.join(self.cache_dir, 'data', f'{key}.parquet'))
+        path = os.path.join(self.cache_dir, 'data', f'{key}.parquet')
+        if os.path.exists(path):
+            return True
+        # Check if we can restore from DB
+        return self._restore_from_db(key)
+
+    def _save_to_db(self, key, parquet_bytes, row_count=0):
+        """Save parquet bytes to PostgreSQL for persistence across deploys."""
+        try:
+            from app.database import SessionLocal
+            from app.models import CachedFile
+            db = SessionLocal()
+            try:
+                existing = db.query(CachedFile).filter(CachedFile.key == key).first()
+                if existing:
+                    existing.data = parquet_bytes
+                    existing.row_count = row_count
+                    existing.uploaded_at = datetime.now()
+                else:
+                    db.add(CachedFile(key=key, data=parquet_bytes, row_count=row_count))
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"  DB persist error for {key}: {e}")
+
+    def _restore_from_db(self, key):
+        """Restore a cached file from PostgreSQL to disk. Returns True if restored."""
+        try:
+            from app.database import SessionLocal
+            from app.models import CachedFile
+            db = SessionLocal()
+            try:
+                cached = db.query(CachedFile).filter(CachedFile.key == key).first()
+                if cached and cached.data:
+                    path = os.path.join(self.cache_dir, 'data', f'{key}.parquet')
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, 'wb') as f:
+                        f.write(cached.data)
+                    print(f"  Restored {key} from DB ({len(cached.data):,} bytes)")
+                    return True
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"  DB restore error for {key}: {e}")
+        return False
+
+    def restore_all_from_db(self):
+        """Restore all cached files from PostgreSQL to disk."""
+        try:
+            from app.database import SessionLocal
+            from app.models import CachedFile
+            db = SessionLocal()
+            try:
+                cached_files = db.query(CachedFile).all()
+                count = 0
+                for cf in cached_files:
+                    if not cf.data:
+                        continue
+                    if cf.key == '_santander_json':
+                        # Restore Santander JSON
+                        sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
+                        os.makedirs(os.path.dirname(sant_path), exist_ok=True)
+                        with open(sant_path, 'wb') as f:
+                            f.write(cf.data)
+                        print(f"  Restored santander JSON from DB ({len(cf.data):,} bytes)")
+                    elif cf.key == '_upload_status':
+                        # Restore upload status
+                        with open(self.status_path, 'wb') as f:
+                            f.write(cf.data)
+                        self.upload_status = self._load_status()
+                        print(f"  Restored upload_status from DB")
+                    else:
+                        # Restore parquet file
+                        path = os.path.join(self.cache_dir, 'data', f'{cf.key}.parquet')
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, 'wb') as f:
+                            f.write(cf.data)
+                        print(f"  Restored {cf.key} from DB ({len(cf.data):,} bytes, {cf.row_count} rows)")
+                    count += 1
+                return count
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"  DB restore all error: {e}")
+            return 0
 
     def _update_status(self, source, row_count, filename=''):
         now = datetime.now()
@@ -132,11 +236,17 @@ class DataHub:
             elif file_type == 'santander':
                 data = ingest_santander(filepath)
                 # Store raw + update cache
+                sant_json = json.dumps(data, default=str)
                 with open(os.path.join(self.cache_dir, 'santander_latest.json'), 'w') as f:
-                    json.dump(data, f, default=str)
+                    f.write(sant_json)
                 update_santander_cache(self.santander_cache_path, data)
                 total = sum(len(v) for v in data.values())
                 self._update_status('santander', total, filename)
+                # Persist Santander JSON to DB
+                try:
+                    self._save_to_db('_santander_json', sant_json.encode('utf-8'), total)
+                except Exception:
+                    pass
                 result['rows'] = total
 
             elif file_type == 'urban_science':
@@ -164,13 +274,19 @@ class DataHub:
         """Full dashboard rebuild from uploaded source files.
 
         Uses the Bridge approach:
-        1. Assembles a temporary xlsx from cached source DataFrames
-        2. Runs the original dashboard_refresh_all_in_one.py processor against it
-        3. The processor generates the Dashboard HTML with all 35+ constants
+        1. Restores any missing cached files from PostgreSQL
+        2. Assembles a temporary xlsx from cached source DataFrames
+        3. Runs the original dashboard_refresh_all_in_one.py processor against it
+        4. The processor generates the Dashboard HTML with all 35+ constants
 
         This eliminates the need for the Master File — individual source
         uploads produce the same output as the original workflow.
         """
+        # Restore cached files from DB if disk was wiped (Render deploys)
+        restored = self.restore_all_from_db()
+        if restored:
+            print(f"  Restored {restored} cached files from PostgreSQL")
+
         # Verify minimum data exists
         if not self._has_data('sap_export'):
             return {'error': 'SAP Export not uploaded yet. Upload at least the SAP Vehicle Export to rebuild.'}

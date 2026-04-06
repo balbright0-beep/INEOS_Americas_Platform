@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, LargeBinary, func
 from app.database import Base
 
 
@@ -127,6 +127,20 @@ class RegionalSales(Base):
     objective = Column(Integer, default=0)
     pct_objective = Column(String)
     cvp = Column(Integer, default=0)
+
+
+# ===== PERSISTENT CACHE (survives Render deploys) =====
+
+class CachedFile(Base):
+    """Store uploaded source file data in PostgreSQL so it survives Render deploys.
+    Each row holds a parquet file as binary data, keyed by source name."""
+    __tablename__ = "cached_files"
+    id = Column(Integer, primary_key=True)
+    key = Column(String, unique=True, nullable=False, index=True)  # e.g., 'sap_export', 'handover', 'leads'
+    data = Column(LargeBinary, nullable=False)  # parquet bytes
+    filename = Column(String)  # original uploaded filename
+    row_count = Column(Integer, default=0)
+    uploaded_at = Column(DateTime, server_default=func.now())
 
 
 # ===== AUDIT & HISTORY =====
