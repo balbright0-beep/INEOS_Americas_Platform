@@ -194,6 +194,8 @@ def get_data_sources(admin=Depends(require_admin), db: Session = Depends(get_db)
         'stock_pipeline': ('Stock & Pipeline Report', 'Daily'),
         'c4c_leads': ('C4C Leads (Marketing)', 'Daily'),
         'santander': ('Santander Daily Report', 'Daily'),
+        'sales_order': ('Sales Order Report', 'Daily'),
+        'qm_leads': ('QM Leads (ALL LEADS)', 'Daily'),
         'urban_science': ('Urban Science Extract', 'Monthly'),
         'ga4': ('Google Analytics (GA4)', 'Weekly'),
     }
@@ -266,6 +268,8 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             'stock_pipeline': ('data_hub.ingest.stock_pipeline', 'ingest_stock_pipeline'),
             'c4c_leads': ('data_hub.ingest.c4c_leads', 'ingest_c4c_leads'),
             'santander': ('data_hub.ingest.santander', 'ingest_santander'),
+            'sales_order': ('data_hub.ingest.sales_order', 'ingest_sales_order'),
+            'qm_leads': ('data_hub.ingest.qm_leads', 'ingest_qm_leads'),
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
         }
 
