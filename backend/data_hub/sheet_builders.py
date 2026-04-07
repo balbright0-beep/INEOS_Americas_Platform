@@ -1422,19 +1422,25 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
 
     Engagement/Acquisition: 9 header rows, then col[0]=day_index (days since 2025-01-01),
     col[1-4]=metric values.
-    Other types: 9 header rows then raw data.
+    User Attributes: section headers (Country/City/Language/Gender/Age/Interests category)
+        followed by name, users rows.
+    Demographics: "Country" header rows, followed by country, u, nu, es, er, spu, aet, ec, ke, ker rows.
+    Tech: section headers (Operating system / Device category / Browser / Screen resolution)
+        followed by name, users rows.
+    Audiences: "Audience name" header rows, followed by name, users, new, sessions, vps, dur rows.
     """
     if ga4_df is None or len(ga4_df) == 0:
         for i in range(10):
             ws.append([''] * 10)
         return
 
-    # 9 header rows
+    # 9 header rows for all types
     for i in range(9):
         ws.append([''] * 10)
 
     cols = list(ga4_df.columns)
 
+    # ─── Engagement / Acquisition ─────────────────────────────────────────
     if ga4_type in ('ga4_engagement', 'ga4_acquisition'):
         start_date = datetime(2025, 1, 1)
         date_col = None
@@ -1467,7 +1473,258 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
         else:
             for _, r in ga4_df.iterrows():
                 ws.append([r.get(c, '') for c in cols])
-    else:
-        # Generic: write columns as-is
-        for _, r in ga4_df.iterrows():
-            ws.append([r.get(c, '') for c in cols])
+        return
+
+    # ─── User Attributes (Country / City / Language / Gender / Age / Interests) ───
+    if ga4_type == 'ga4_user_attributes':
+        users_col = _find_col(cols, ['totalUsers', 'users', 'activeUsers'])
+
+        # Country
+        if 'country' in cols and users_col:
+            agg = ga4_df.groupby('country', as_index=False)[users_col].sum()
+            agg = agg.sort_values(users_col, ascending=False)
+            ws.append(['Country'])
+            for _, r in agg.iterrows():
+                name = str(r['country']).strip()
+                if name and name != '(not set)':
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+
+        # City
+        if 'city' in cols and users_col:
+            agg = ga4_df.groupby('city', as_index=False)[users_col].sum()
+            agg = agg.sort_values(users_col, ascending=False).head(1000)
+            ws.append(['City'])
+            for _, r in agg.iterrows():
+                name = str(r['city']).strip()
+                if name and name != '(not set)':
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+
+        # Language
+        if 'language' in cols and users_col:
+            agg = ga4_df.groupby('language', as_index=False)[users_col].sum()
+            agg = agg.sort_values(users_col, ascending=False).head(50)
+            ws.append(['Language'])
+            for _, r in agg.iterrows():
+                name = str(r['language']).strip()
+                if name and name != '(not set)':
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+
+        # Gender
+        if 'userGender' in cols and users_col:
+            agg = ga4_df.groupby('userGender', as_index=False)[users_col].sum()
+            ws.append(['Gender'])
+            for _, r in agg.iterrows():
+                name = str(r['userGender']).strip()
+                if name and name not in ('(not set)', 'unknown'):
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+
+        # Age
+        if 'userAgeBracket' in cols and users_col:
+            agg = ga4_df.groupby('userAgeBracket', as_index=False)[users_col].sum()
+            ws.append(['Age'])
+            for _, r in agg.iterrows():
+                name = str(r['userAgeBracket']).strip()
+                if name and name not in ('(not set)', 'unknown'):
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+
+        # Interests
+        if 'interests' in cols and users_col:
+            agg = ga4_df.groupby('interests', as_index=False)[users_col].sum()
+            agg = agg.sort_values(users_col, ascending=False).head(50)
+            ws.append(['Interests category'])
+            for _, r in agg.iterrows():
+                name = str(r['interests']).strip()
+                if name and name != '(not set)':
+                    ws.append([name, float(r[users_col])])
+            ws.append([''])
+        return
+
+    # ─── Demographics (4 sections by channel) ─────────────────────────────
+    if ga4_type == 'ga4_demographics':
+        users_col = _find_col(cols, ['totalUsers', 'users', 'activeUsers'])
+        new_col = _find_col(cols, ['newUsers'])
+        sess_col = _find_col(cols, ['sessions'])
+        eng_sess_col = _find_col(cols, ['engagedSessions'])
+        eng_rate_col = _find_col(cols, ['engagementRate'])
+        spu_col = _find_col(cols, ['sessionsPerUser'])
+        aet_col = _find_col(cols, ['averageSessionDuration', 'userEngagementDuration', 'engagementTime'])
+        ec_col = _find_col(cols, ['eventCount'])
+        ke_col = _find_col(cols, ['keyEvents', 'conversions'])
+        ker_col = _find_col(cols, ['keyEventRate', 'sessionConversionRate'])
+
+        if 'country' not in cols or not users_col:
+            return
+
+        # Group by channel if available
+        chan_col = _find_col(cols, ['sessionDefaultChannelGroup', 'channelGroup'])
+        if chan_col:
+            channel_filters = [
+                ('all', None),
+                ('dir', 'Direct'),
+                ('org', 'Organic Search'),
+                ('paid', 'Paid Search'),
+            ]
+        else:
+            channel_filters = [('all', None)]
+
+        for seg_name, chan_val in channel_filters:
+            if chan_val is None:
+                seg_df = ga4_df
+            else:
+                seg_df = ga4_df[ga4_df[chan_col] == chan_val]
+            if len(seg_df) == 0:
+                ws.append(['Country'])
+                ws.append([''])
+                continue
+
+            agg_dict = {users_col: 'sum'}
+            for c in [new_col, sess_col, eng_sess_col, ec_col, ke_col]:
+                if c:
+                    agg_dict[c] = 'sum'
+            for c in [eng_rate_col, spu_col, aet_col, ker_col]:
+                if c:
+                    agg_dict[c] = 'mean'
+
+            agg = seg_df.groupby('country', as_index=False).agg(agg_dict)
+            agg = agg.sort_values(users_col, ascending=False).head(250)
+
+            ws.append(['Country'])
+            for _, r in agg.iterrows():
+                name = str(r['country']).strip()
+                if not name or name == '(not set)':
+                    continue
+                ws.append([
+                    name,
+                    float(r[users_col]) if users_col else 0,
+                    float(r[new_col]) if new_col else 0,
+                    float(r[eng_sess_col]) if eng_sess_col else 0,
+                    float(r[eng_rate_col]) if eng_rate_col else 0,
+                    float(r[spu_col]) if spu_col else 0,
+                    float(r[aet_col]) if aet_col else 0,
+                    float(r[ec_col]) if ec_col else 0,
+                    float(r[ke_col]) if ke_col else 0,
+                    float(r[ker_col]) if ker_col else 0,
+                ])
+            ws.append([''])
+        return
+
+    # ─── Tech (Operating system / Device category / Browser / Screen resolution) ───
+    if ga4_type == 'ga4_tech':
+        users_col = _find_col(cols, ['totalUsers', 'users', 'activeUsers'])
+        if not users_col:
+            return
+
+        chan_col = _find_col(cols, ['sessionDefaultChannelGroup', 'channelGroup'])
+        if chan_col:
+            channel_filters = [
+                ('all', None),
+                ('dir', 'Direct'),
+                ('org', 'Organic Search'),
+                ('paid', 'Paid Search'),
+            ]
+        else:
+            channel_filters = [('all', None)]
+
+        def write_dim_section(label, col_name):
+            if col_name not in cols:
+                return
+            for seg_name, chan_val in channel_filters:
+                if chan_val is None:
+                    seg_df = ga4_df
+                else:
+                    seg_df = ga4_df[ga4_df[chan_col] == chan_val]
+                if len(seg_df) == 0:
+                    ws.append([label])
+                    ws.append([''])
+                    continue
+                agg = seg_df.groupby(col_name, as_index=False)[users_col].sum()
+                agg = agg.sort_values(users_col, ascending=False).head(100)
+                ws.append([label])
+                for _, r in agg.iterrows():
+                    name = str(r[col_name]).strip()
+                    if name and name != '(not set)':
+                        ws.append([name, float(r[users_col])])
+                ws.append([''])
+
+        write_dim_section('Operating system', 'operatingSystem')
+        write_dim_section('Device category', 'deviceCategory')
+        write_dim_section('Browser', 'browser')
+        write_dim_section('Screen resolution', 'screenResolution')
+        return
+
+    # ─── Audiences ─────────────────────────────────────────────────────────
+    if ga4_type == 'ga4_audiences':
+        users_col = _find_col(cols, ['totalUsers', 'users', 'activeUsers'])
+        new_col = _find_col(cols, ['newUsers'])
+        sess_col = _find_col(cols, ['sessions'])
+        vps_col = _find_col(cols, ['screenPageViewsPerSession', 'viewsPerSession'])
+        dur_col = _find_col(cols, ['averageSessionDuration', 'userEngagementDuration'])
+
+        if 'audienceName' not in cols or not users_col:
+            return
+
+        chan_col = _find_col(cols, ['sessionDefaultChannelGroup', 'channelGroup'])
+        if chan_col:
+            channel_filters = [
+                ('all', None),
+                ('dir', 'Direct'),
+                ('org', 'Organic Search'),
+                ('paid', 'Paid Search'),
+            ]
+        else:
+            channel_filters = [('all', None)]
+
+        for seg_name, chan_val in channel_filters:
+            if chan_val is None:
+                seg_df = ga4_df
+            else:
+                seg_df = ga4_df[ga4_df[chan_col] == chan_val]
+            if len(seg_df) == 0:
+                ws.append(['Audience name'])
+                ws.append([''])
+                continue
+
+            agg_dict = {users_col: 'sum'}
+            for c in [new_col, sess_col]:
+                if c:
+                    agg_dict[c] = 'sum'
+            for c in [vps_col, dur_col]:
+                if c:
+                    agg_dict[c] = 'mean'
+
+            agg = seg_df.groupby('audienceName', as_index=False).agg(agg_dict)
+            agg = agg.sort_values(users_col, ascending=False).head(100)
+
+            ws.append(['Audience name'])
+            for _, r in agg.iterrows():
+                name = str(r['audienceName']).strip()
+                if not name or name == '(not set)':
+                    continue
+                ws.append([
+                    name,
+                    float(r[users_col]) if users_col else 0,
+                    float(r[new_col]) if new_col else 0,
+                    float(r[sess_col]) if sess_col else 0,
+                    float(r[vps_col]) if vps_col else 0,
+                    float(r[dur_col]) if dur_col else 0,
+                ])
+            ws.append([''])
+        return
+
+    # Fallback: generic dump
+    for _, r in ga4_df.iterrows():
+        ws.append([r.get(c, '') for c in cols])
+
+
+def _find_col(cols, candidates):
+    """Return first matching column name from candidates (case-insensitive)."""
+    cols_lower = {c.lower(): c for c in cols}
+    for cand in candidates:
+        if cand.lower() in cols_lower:
+            return cols_lower[cand.lower()]
+    return None

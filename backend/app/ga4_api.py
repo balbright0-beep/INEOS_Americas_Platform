@@ -85,30 +85,67 @@ REPORTS = {
             'engagedSessions', 'engagementRate',
         ],
     },
+    # User attributes is fetched as MULTIPLE sub-reports merged into one DF
+    # because GA4 doesn't allow combining all these dims in one query.
     'user_attributes': {
-        'dimensions': ['country', 'city', 'language'],
-        'metrics': ['totalUsers', 'newUsers', 'sessions'],
+        '_sub_reports': [
+            {'dimensions': ['country'], 'metrics': ['totalUsers', 'newUsers', 'sessions']},
+            {'dimensions': ['city'], 'metrics': ['totalUsers', 'newUsers', 'sessions']},
+            {'dimensions': ['language'], 'metrics': ['totalUsers', 'newUsers', 'sessions']},
+            {'dimensions': ['userGender'], 'metrics': ['totalUsers']},
+            {'dimensions': ['userAgeBracket'], 'metrics': ['totalUsers']},
+            {'dimensions': ['brandingInterest'], 'metrics': ['totalUsers'], '_alias': {'brandingInterest': 'interests'}},
+        ],
     },
     'demographics': {
-        'dimensions': ['country'],
+        'dimensions': ['country', 'sessionDefaultChannelGroup'],
         'metrics': [
             'totalUsers', 'newUsers', 'sessions',
             'engagedSessions', 'engagementRate',
+            'sessionsPerUser', 'averageSessionDuration',
+            'eventCount', 'keyEvents', 'sessionKeyEventRate',
         ],
     },
     'audiences': {
-        'dimensions': ['audienceName'],
-        'metrics': ['totalUsers', 'sessions'],
+        'dimensions': ['audienceName', 'sessionDefaultChannelGroup'],
+        'metrics': [
+            'totalUsers', 'newUsers', 'sessions',
+            'screenPageViewsPerSession', 'averageSessionDuration',
+        ],
     },
     'tech': {
-        'dimensions': ['deviceCategory', 'operatingSystem', 'browser'],
+        'dimensions': ['deviceCategory', 'operatingSystem', 'browser', 'screenResolution', 'sessionDefaultChannelGroup'],
         'metrics': ['totalUsers', 'sessions', 'engagedSessions'],
     },
 }
 
 
+def _run_query(client, dimensions, metrics, start_date, end_date):
+    """Run a single GA4 query and return list of dicts."""
+    request = RunReportRequest(
+        property=f'properties/{PROPERTY_ID}',
+        dimensions=[Dimension(name=d) for d in dimensions],
+        metrics=[Metric(name=m) for m in metrics],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        limit=100000,
+    )
+    response = client.run_report(request)
+    rows = []
+    for row in response.rows:
+        record = {}
+        for i, dim in enumerate(row.dimension_values):
+            record[dimensions[i]] = dim.value
+        for i, met in enumerate(row.metric_values):
+            try:
+                record[metrics[i]] = float(met.value)
+            except ValueError:
+                record[metrics[i]] = met.value
+        rows.append(record)
+    return rows
+
+
 def fetch_report(client, report_name, start_date=None, end_date=None):
-    """Fetch a single GA4 report."""
+    """Fetch a single GA4 report. Supports multi-sub-report definitions."""
     if report_name not in REPORTS:
         raise ValueError(f"Unknown report: {report_name}. Available: {list(REPORTS.keys())}")
 
@@ -119,31 +156,23 @@ def fetch_report(client, report_name, start_date=None, end_date=None):
     if end_date is None:
         end_date = 'today'
 
-    request = RunReportRequest(
-        property=f'properties/{PROPERTY_ID}',
-        dimensions=[Dimension(name=d) for d in config['dimensions']],
-        metrics=[Metric(name=m) for m in config['metrics']],
-        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-        limit=100000,
-    )
-
-    response = client.run_report(request)
-
-    # Convert to list of dicts
     rows = []
-    dim_names = [d for d in config['dimensions']]
-    met_names = [m for m in config['metrics']]
-
-    for row in response.rows:
-        record = {}
-        for i, dim in enumerate(row.dimension_values):
-            record[dim_names[i]] = dim.value
-        for i, met in enumerate(row.metric_values):
+    if '_sub_reports' in config:
+        for sub in config['_sub_reports']:
             try:
-                record[met_names[i]] = float(met.value)
-            except ValueError:
-                record[met_names[i]] = met.value
-        rows.append(record)
+                sub_rows = _run_query(client, sub['dimensions'], sub['metrics'], start_date, end_date)
+                # Apply dimension aliasing if present
+                alias = sub.get('_alias', {})
+                if alias:
+                    for r in sub_rows:
+                        for old_key, new_key in alias.items():
+                            if old_key in r:
+                                r[new_key] = r.pop(old_key)
+                rows.extend(sub_rows)
+            except Exception as e:
+                print(f"  GA4 {report_name} sub-query {sub['dimensions']} ERROR: {e}")
+    else:
+        rows = _run_query(client, config['dimensions'], config['metrics'], start_date, end_date)
 
     return {
         'report_type': report_name,

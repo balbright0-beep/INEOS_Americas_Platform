@@ -173,10 +173,11 @@ def assemble_master_xlsx(cache_dir, template_path=None):
         ws_ga4 = wb.create_sheet(sheet_name)
         if ga4_df is not None and len(ga4_df) > 0:
             build_ga4_sheet_formatted(ws_ga4, ga4_df, ga4_name)
-            print(f"  {sheet_name}: {len(ga4_df)} rows")
+            print(f"  {sheet_name}: {len(ga4_df)} input rows, cols={list(ga4_df.columns)}")
         else:
             for i in range(10):
                 ws_ga4.append([""] * 10)
+            print(f"  {sheet_name}: NO DATA in cache")
 
     # ═══ SANTANDER SHEETS ═══
     for name in ["Santander Report ", "Santander Report Finance", "Santander Report Lease"]:
