@@ -27,13 +27,14 @@ def _safe_str(v):
 
 
 def _date_to_serial(d):
-    """Convert date to Excel serial number."""
+    """Convert date to Excel serial number. Always returns float (not int).
+    The processor checks isinstance(value, float) so int serials get skipped."""
     if d is None:
         return None
     if isinstance(d, (int, float)):
-        if np.isnan(d):
+        if isinstance(d, float) and np.isnan(d):
             return None
-        return d
+        return float(d)
     try:
         if pd.isna(d):
             return None
@@ -46,7 +47,7 @@ def _date_to_serial(d):
                 return None
         if hasattr(d, 'toordinal'):
             delta = d - datetime(1899, 12, 30)
-            return delta.days + (getattr(delta, 'seconds', 0) / 86400.0)
+            return float(delta.days) + (getattr(delta, 'seconds', 0) / 86400.0)
     except Exception:
         pass
     return None
@@ -1153,10 +1154,10 @@ def build_santander_sheets(wb, cache_dir):
         while ws.max_row < 9:
             ws.append([''] * 10)
         for ym, volume in sorted(monthly.items()):
-            # Convert YYYY-MM to 1st of month serial
+            # Convert YYYY-MM to 1st of month serial — must be float for processor
             serial = _date_to_serial(f'{ym}-01')
             if serial:
-                ws.append([serial, int(volume)])
+                ws.append([float(serial), int(volume)])
         print(f"  Santander Report: {len(monthly)} months")
 
     # Daily data → "App Report MoM" (all), "App Report Finance", "App Report Lease"
@@ -1197,19 +1198,21 @@ def build_santander_sheets(wb, cache_dir):
         else:
             ws = wb[sheet_name]
 
-        ws.append(['Date', 'Volume'])
+        # Row 0: numeric placeholder (processor skips rows[0], reads rows[1:])
+        # Do NOT write string headers — processor stops on isinstance(r[0], str)
+        ws.append([0.0, 0])
         if isinstance(daily_data, dict):
             for date_str, vol in sorted(daily_data.items()):
                 serial = _date_to_serial(date_str)
                 if serial:
-                    ws.append([serial, int(vol)])
+                    ws.append([float(serial), int(vol)])
         elif isinstance(daily_data, list):
             for entry in daily_data:
                 if isinstance(entry, dict):
                     serial = _date_to_serial(entry.get('date', ''))
                     vol = entry.get('volume', entry.get('count', 0))
                     if serial:
-                        ws.append([serial, int(vol)])
+                        ws.append([float(serial), int(vol)])
 
     if daily:
         print(f"  Santander Daily: {len(daily)} days → MoM/Finance/Lease sheets")
