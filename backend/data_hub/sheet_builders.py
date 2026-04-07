@@ -849,11 +849,15 @@ def build_inventory_sheet(ws, export_rows, mkt_map):
     Processor reads rows 3+: [1]=market, [2]=dealer name
     """
     # Collect unique dealers
+    # Hertz (rental fleet customer) is excluded — they are not a retailer and
+    # their bulk fleet purchases distort dealer-level inventory metrics.
     dealers = {}
     for r in export_rows:
         if r['country_code'] not in ('US', 'CA', 'MX'):
             continue
         dk = r['dealer_upper']
+        if 'HERTZ' in dk:
+            continue
         if dk not in dealers:
             dealers[dk] = {'name': r['dealer'], 'market': r['market']}
 
