@@ -83,6 +83,32 @@ def dashboard_status():
         result['output_size'] = stat.st_size
         result['output_modified'] = datetime.fromtimestamp(stat.st_mtime).isoformat()
 
+    # Check Santander JSON files
+    sant_info = {}
+    for fname in ['santander.json', 'santander_finance.json', 'santander_lease.json']:
+        fpath = os.path.join(cache_dir, fname)
+        if os.path.exists(fpath):
+            import json as _json
+            try:
+                with open(fpath) as f:
+                    data = _json.load(f)
+                sant_info[fname] = {
+                    'size': os.path.getsize(fpath),
+                    'keys': list(data.keys()),
+                    'monthly_count': len(data.get('monthly', {})),
+                    'daily_count': len(data.get('daily', {})),
+                    'monthly_last': list(data.get('monthly', {}).keys())[-3:] if data.get('monthly') else [],
+                    'daily_last': list(sorted(data.get('daily', {}).keys()))[-3:] if data.get('daily') else [],
+                }
+            except Exception as e:
+                sant_info[fname] = {'error': str(e)}
+    result['santander_files'] = sant_info
+
+    # Also check santander_latest.json in cache root
+    slj = os.path.join(base, 'cache', 'santander_latest.json')
+    if os.path.exists(slj):
+        result['santander_latest_size'] = os.path.getsize(slj)
+
     if result['template_exists']:
         result['template_size'] = os.path.getsize(template_path)
 
