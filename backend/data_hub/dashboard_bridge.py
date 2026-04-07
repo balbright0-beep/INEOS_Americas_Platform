@@ -240,6 +240,30 @@ def _post_process_html(output_path, cache_dir):
     html = replace_const(html, "LQ_MO", lq_data['LQ_MO'])
     html = replace_const(html, "LQ_REP_MO", lq_data['LQ_REP_MO'])
 
+    # ── Inject TD-to-sale percentages into DPD const ──
+    tds_path = os.path.join(cache_dir, 'data', 'dpd_tds.json')
+    if os.path.exists(tds_path):
+        try:
+            with open(tds_path, 'r') as f:
+                tds_map = json.load(f)
+            # Normalize keys upper for matching
+            tds_upper = {str(k).upper(): float(v) for k, v in tds_map.items()}
+
+            m = re.search(r'(const\s+DPD\s*=\s*)(\[.*?\])(\s*;)', html, re.DOTALL)
+            if m:
+                dpd_arr = json.loads(m.group(2))
+                injected = 0
+                for row in dpd_arr:
+                    dname = str(row.get('d', '')).upper()
+                    if dname in tds_upper:
+                        row['tds'] = tds_upper[dname]
+                        injected += 1
+                new_block = m.group(1) + json.dumps(dpd_arr, separators=(',', ':')) + m.group(3)
+                html = html[:m.start()] + new_block + html[m.end():]
+                print(f"  [PostProcess] DPD tds: injected {injected}/{len(dpd_arr)} dealers")
+        except Exception as e:
+            print(f"  [PostProcess] DPD tds inject warning: {e}")
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
 

@@ -154,6 +154,62 @@ def compute_matchback(leads, urban_science):
     return result
 
 
+def compute_td_to_sale(leads, urban_science):
+    """Compute per-dealer TD→sale matchback using 4-letter last name fragments.
+
+    For each completed test drive, check whether the same customer (matched by
+    4-letter last-name fragments) appears in urban_science sales at the same
+    dealer within 0-365 days after the TD. Returns dict:
+        dealer_upper → {'td_completed': N, 'td_to_sale': M, 'pct': %}
+    """
+    result = defaultdict(lambda: {'td_completed': 0, 'td_to_sale': 0, 'pct': 0.0})
+
+    if leads is None or len(leads) == 0 or urban_science is None or len(urban_science) == 0:
+        return result
+
+    def _frags(name):
+        n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
+        return set(n[i:i+4] for i in range(len(n) - 3)) if len(n) >= 4 else set()
+
+    def _norm(d):
+        d = str(d).replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
+        return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
+
+    # Index sales by dealer for fast lookup
+    dlr_sales = defaultdict(list)
+    for _, sr in urban_science.iterrows():
+        dk = _norm(_safe_str(sr.get('dealer_name', '')))
+        sd = _safe_date(sr.get('sale_date', None))
+        bf = _frags(sr.get('customer_last_name', ''))
+        if dk and sd and bf:
+            dlr_sales[dk].append((sd, bf))
+
+    # For each completed TD, look for matching sale at same dealer
+    for _, lr in leads.iterrows():
+        flag = _safe_str(lr.get('td_completed_flag', '')).lower()
+        if flag not in ('yes', 'true', '1', 'completed'):
+            continue
+        dk = _norm(_safe_str(lr.get('retailer_name', '')))
+        td_date = _safe_date(lr.get('td_booking_date', lr.get('start_date', None)))
+        cf = _frags(lr.get('customer_name', ''))
+        if not dk or not td_date or not cf:
+            continue
+        result[dk]['td_completed'] += 1
+        for sd, bf in dlr_sales.get(dk, []):
+            diff = (sd - td_date).days
+            if 0 <= diff <= 365 and (bf & cf):
+                result[dk]['td_to_sale'] += 1
+                break
+
+    for dk, v in result.items():
+        v['pct'] = round(v['td_to_sale'] / v['td_completed'] * 100, 1) if v['td_completed'] > 0 else 0.0
+
+    total_td = sum(v['td_completed'] for v in result.values())
+    total_match = sum(v['td_to_sale'] for v in result.values())
+    print(f"  [TD-to-Sale] Computed: {len(result)} dealers, matched {total_match}/{total_td} completed TDs")
+    return result
+
+
 def _classify_bt(channel, billto_val=''):
     """Classify a vehicle as Retail/Fleet/Internal/Enterprise.
     Matches the exact logic in the assembler's Export sheet column 58."""
@@ -555,49 +611,90 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
 def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, dealer_mb=None):
     """Populate DPD sheet — exactly 27 columns per dealer row.
 
-    Processor reads rows 3+:
-    [0]=market [1]=dealer [2]=handovers(MTD) [3]=CVP [4]=wholesale [5]=W/S gap
-    [6]=on-ground [7]=dollar_sales [8]=dollar_count
-    [9-14]=monthly sales (6 recent months)
-    [15]=R3M_avg [16]=R3M_total [17]=R_leads [18]=R_leads_total
-    [19]=TD_booked [20]=TD_total [21]=TD_won [22]=TD_pct
-    [23-26]=MB30%/MB60%/MB90%/MB_all_time%
+    Processor's build_DPD reads:
+      [0]=market [1]=dealer
+      [2]=ho (YTD handovers) [3]=cvp (YTD CVP) [4]=ws (YTD wholesale/rev-rec)
+      [5]=gap "1.00:1" [6]=og (on-ground) [7]=ds (days supply) [8]=dsc (DS+CVP)
+      [9-14]=monthly handovers for prior 6 months (oldest→newest)
+      [15]=r3 (R3M avg) [16]=r3t (H/O R3M trend = current_R3M − prior_R3M)
+      [17]=rl (R3M leads) [18]=rlt (Lead trend delta)
+      [19]=td (R3M completed TDs) [20]=tdt (TD trend delta)
+      [21]=tdw (weekend) [22]=tdp (program)
+      [23-26]=mb30/60/90/all-time fractions
+
+    Returns dict: dealer_upper → td_to_sale_pct (for post-process injection).
     """
     today = datetime.now()
+    cur_year = today.year
     cur_month = today.strftime('%Y-%m')
     cur_day = today.day
-    prev_month_str = (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
+    prev_month_dt = today.replace(day=1) - timedelta(days=1)
+    prev_month_str = prev_month_dt.strftime('%Y-%m')
 
-    # Build 6 recent month labels (e.g., for Apr 2026: Oct,Nov,Dec,Jan,Feb,Mar)
+    # Build 6 recent month labels — calendar-aligned (NOT 30-day approximations)
+    # For Apr 2026: Oct, Nov, Dec, Jan, Feb, Mar (6 prior closed months)
     recent_months = []
-    for i in range(6, 0, -1):
-        dt = today.replace(day=1) - timedelta(days=30 * i)
-        recent_months.append(dt.strftime('%Y-%m'))
+    cursor = today.replace(day=1)
+    for _ in range(6):
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        recent_months.insert(0, cursor.strftime('%Y-%m'))
 
-    prev_3_months = recent_months[-3:]
+    # R3M = last 3 closed months (newest 3 of recent_months)
+    r3m_months = recent_months[-3:]
+    # Prior R3M = the 3 months before that
+    prior_r3m_months = recent_months[:3]
 
-    # Accumulate per-dealer stats
-    stats = defaultdict(lambda: {
-        'market': '', 'mtd_ho': 0, 'cvp': 0, 'og': 0,
-        'pm_mtd': 0,  # prior-month handovers up to same day-of-month as today
-        'monthly': defaultdict(int),  # ym → handovers (full month)
+    # 90-day window for days-supply daily sales rate
+    r90_start = today - timedelta(days=90)
+
+    # ── Lead stats by dealer (R3M and prior R3M for delta trends) ──
+    lead_stats = defaultdict(lambda: {
+        'r3m_leads': 0, 'prior_r3m_leads': 0,
+        'r3m_td': 0, 'prior_r3m_td': 0,
+        'td_wknd': 0, 'td_prog': 0,
     })
-
-    # Lead stats by dealer
-    lead_stats = defaultdict(lambda: {'leads': 0, 'td_booked': 0, 'td_completed': 0})
     if leads is not None and len(leads) > 0:
         for _, lr in leads.iterrows():
             dealer = _norm_dealer(_safe_str(lr.get('retailer_name', ''))).upper()
             if not dealer:
                 continue
             ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
-            if ld and ld.strftime('%Y-%m') >= recent_months[0]:
-                lead_stats[dealer]['leads'] += 1
-            td = _safe_date(lr.get('td_booking_date', None))
-            if td:
-                lead_stats[dealer]['td_booked'] += 1
-            if _safe_str(lr.get('td_completed_flag', '')).lower() in ('yes', 'true', '1'):
-                lead_stats[dealer]['td_completed'] += 1
+            if ld:
+                ym = ld.strftime('%Y-%m')
+                if ym in r3m_months:
+                    lead_stats[dealer]['r3m_leads'] += 1
+                elif ym in prior_r3m_months:
+                    lead_stats[dealer]['prior_r3m_leads'] += 1
+            # TD activity
+            td_completed = _safe_str(lr.get('td_completed_flag', '')).lower() in ('yes', 'true', '1', 'completed')
+            if td_completed:
+                td = _safe_date(lr.get('td_booking_date', None)) or ld
+                if td:
+                    ym = td.strftime('%Y-%m')
+                    if ym in r3m_months:
+                        lead_stats[dealer]['r3m_td'] += 1
+                    elif ym in prior_r3m_months:
+                        lead_stats[dealer]['prior_r3m_td'] += 1
+                    # Weekend?
+                    try:
+                        if td.weekday() >= 5:
+                            lead_stats[dealer]['td_wknd'] += 1
+                    except Exception:
+                        pass
+
+    # ── Per-dealer stats from export ──
+    stats = defaultdict(lambda: {
+        'market': '',
+        'ytd_ho': 0,         # YTD handovers (current calendar year)
+        'ytd_cvp': 0,        # YTD CVP handovers
+        'ytd_ws': 0,         # YTD wholesale = rev_rec_date count this year
+        'mtd_ho': 0,
+        'mtd_cvp': 0,
+        'cvp_total': 0,      # current outstanding/inventory CVP
+        'og': 0,
+        'r90_sales': 0,      # last 90 days handovers
+        'monthly': defaultdict(int),  # ym → handover count
+    })
 
     for r in export_rows:
         if r['country_code'] not in ('US', 'CA', 'MX'):
@@ -612,27 +709,44 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
             if r['channel'] in ('STOCK', 'PRIVATE - RETAILER'):
                 stats[dk]['og'] += 1
 
-        # Sales by month
+        # Wholesale (rev rec) — count YTD
+        rrd = r.get('rev_rec_date')
+        if rrd and rrd.year == cur_year:
+            stats[dk]['ytd_ws'] += 1
+
+        # Handovers
         if r['ho_date']:
             ho_ym = r['ho_date'].strftime('%Y-%m')
             stats[dk]['monthly'][ho_ym] += 1
+
+            # YTD (current calendar year)
+            if r['ho_date'].year == cur_year:
+                stats[dk]['ytd_ho'] += 1
+                if r['is_cvp']:
+                    stats[dk]['ytd_cvp'] += 1
+
             if ho_ym == cur_month:
                 stats[dk]['mtd_ho'] += 1
                 if r['is_cvp']:
-                    stats[dk]['cvp'] += 1
-            # Same-day-of-month prior MTD for fair comparison
-            if ho_ym == prev_month_str and r['ho_date'].day <= cur_day:
-                stats[dk]['pm_mtd'] += 1
+                    stats[dk]['mtd_cvp'] += 1
 
-    # Use pre-computed matchback (or empty default)
+            # 90-day rolling for daily sales rate
+            if r['ho_date'] >= r90_start:
+                stats[dk]['r90_sales'] += 1
+
+    # ── Use pre-computed sales matchback (MB%) ──
     if dealer_mb is None:
         dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
 
+    # ── Compute TD-to-sale matchback ──
+    td_to_sale = compute_td_to_sale(leads, urban_science)
+    tds_map = {}  # dealer_upper → pct (for post-process injection)
+
     # ── Header rows (0-2) ──
-    ws.append(['Market', 'Dealer', 'Handovers', 'CVP', 'Wholesale', 'Gap',
-               'On Ground', 'DollarSales', 'DollarCount'] +
-              [f'Mo{i}' for i in range(6)] +
-              ['R3M', 'R3M_T', 'Leads', 'Leads_T', 'TD', 'TD_T', 'TD_Won', 'TD%',
+    ws.append(['Market', 'Dealer', 'YTD H/O', 'YTD CVP', 'YTD W/S', 'Gap',
+               'On Ground', 'DS', 'DS+CVP'] +
+              recent_months +
+              ['R3M', 'R3M_T', 'Leads', 'Leads_T', 'TD', 'TD_T', 'TD_Wk', 'TD_Pr',
                'MB30', 'MB60', 'MB90', 'MB_AT'])
     ws.append([''] * 27)
     ws.append([''] * 27)
@@ -640,11 +754,10 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
     # ── Data rows (3+) sorted by market ──
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
 
-    # Group dealers by market, include "Other" for unmapped
     dealers_by_region = defaultdict(list)
     for dk, s in stats.items():
-        # Include dealers with any activity (MTD, on-ground, or any historical month)
-        has_activity = s['mtd_ho'] > 0 or s['og'] > 0 or sum(s['monthly'].values()) > 0
+        has_activity = (s['ytd_ho'] > 0 or s['og'] > 0 or s['ytd_ws'] > 0
+                        or sum(s['monthly'].values()) > 0)
         if not has_activity:
             continue
         mkt = s['market'] if s['market'] in region_order else 'Other'
@@ -652,62 +765,61 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
 
     for region in region_order + ['Other']:
         dealers = dealers_by_region.get(region, [])
-        dealers.sort(key=lambda x: -x[1]['mtd_ho'])
+        dealers.sort(key=lambda x: -x[1]['ytd_ho'])
 
         for dk, s in dealers:
-            # Monthly sales history — use day-of-month-aligned prior MTD
-            # so the dashboard's prior-month delta compares the same elapsed
-            # window in both months (e.g., Apr 1-7 vs Mar 1-7).
-            prev_mo_val = s['pm_mtd']
-            mtd_val = s['mtd_ho']
+            # ── Days supply: og / (90-day-sales / 90) ──
+            daily_rate = s['r90_sales'] / 90.0 if s['r90_sales'] > 0 else 0
+            if daily_rate > 0:
+                ds = int(round(s['og'] / daily_rate))
+                # DS+CVP — adds outstanding CVP commitments to inventory side
+                ds_cvp = int(round((s['og'] + s['mtd_cvp']) / daily_rate))
+            else:
+                ds = 0
+                ds_cvp = 0
+            # Cap absurd values (no sales → infinite supply)
+            if ds > 999: ds = 999
+            if ds_cvp > 999: ds_cvp = 999
 
-            # R3M (rolling 3-month) - last 3 months
-            r3m_vals = [s['monthly'].get(ym, 0) for ym in prev_3_months]
-            r3m = round(sum(r3m_vals) / 3, 1) if r3m_vals else 0
+            # ── Monthly history: 6 prior closed months ──
+            monthly_vals = [s['monthly'].get(ym, 0) for ym in recent_months]
 
-            # Prior R3M (the 3 months before that) for trend
-            prior_3_months = recent_months[:3]
-            prior_r3m_vals = [s['monthly'].get(ym, 0) for ym in prior_3_months]
-            prior_r3m = round(sum(prior_r3m_vals) / 3, 1) if prior_r3m_vals else 0
+            # ── R3M average and trend (delta) ──
+            r3m_total = sum(s['monthly'].get(ym, 0) for ym in r3m_months)
+            r3m = round(r3m_total / 3.0, 1)
+            prior_r3m_total = sum(s['monthly'].get(ym, 0) for ym in prior_r3m_months)
+            prior_r3m = round(prior_r3m_total / 3.0, 1)
+            ho_trend = round(r3m - prior_r3m, 1)  # DELTA, not ratio
 
-            # H/O Trend = (current R3M / prior R3M) - 1, or just ratio
-            ho_trend = round(r3m / prior_r3m, 2) if prior_r3m > 0 else 1.0
+            # ── Lead/TD R3M and trend deltas ──
+            ld = lead_stats.get(dk, {'r3m_leads': 0, 'prior_r3m_leads': 0,
+                                     'r3m_td': 0, 'prior_r3m_td': 0,
+                                     'td_wknd': 0, 'td_prog': 0})
+            lead_trend = ld['r3m_leads'] - ld['prior_r3m_leads']
+            td_trend = ld['r3m_td'] - ld['prior_r3m_td']
 
-            # Lead data
-            ld = lead_stats.get(dk, {'leads': 0, 'td_booked': 0, 'td_completed': 0})
-            lead_trend = 1.0  # Would need historical lead data
-            td_trend = 1.0
-
-            # Processor reads:
-            # [2]=ho [3]=cvp [4]=ws [5]=ws_gap [6]=og [7]=dol [8]=dsc
-            # [9-12]=sep/oct/nov/dec (older months, 0 for now)
-            # [13]=prev [14]=mtd [15]=r3m_avg [16]=ho_trend
-            # [17]=r3m_leads [18]=lead_trend [19]=r3m_td [20]=td_trend
-            # [21]=td_wknd [22]=td_prog [23-26]=mb30/60/90/at
             row = [''] * 27
             row[0] = region
             row[1] = dk.title()
-            row[2] = mtd_val           # handovers MTD
-            row[3] = s['cvp']          # CVP
-            row[4] = 0                 # wholesale (not tracked)
-            row[5] = '1.00:1'          # W/S:H/O gap
-            row[6] = s['og']           # on-ground
-            row[7] = 0                 # dol (overridden by INV recompute)
-            row[8] = 0                 # dollar count
-            # Cols 9-12: older monthly history (optional)
-            for i, ym in enumerate(recent_months[:4]):
-                row[9 + i] = s['monthly'].get(ym, 0)
-            row[13] = prev_mo_val      # prev month
-            row[14] = mtd_val          # current mtd
-            row[15] = r3m              # R3M avg
-            row[16] = ho_trend         # H/O trend ratio
-            row[17] = ld['leads']      # R3M leads
-            row[18] = lead_trend       # lead trend
-            row[19] = ld['td_booked']  # R3M TD bookings
-            row[20] = td_trend         # TD trend
-            row[21] = 0                # TD weekend
-            row[22] = 0                # TD program
-            # Matchback percentages
+            row[2] = s['ytd_ho']            # YTD handovers
+            row[3] = s['ytd_cvp']           # YTD CVP
+            row[4] = s['ytd_ws']            # YTD wholesale (rev rec count)
+            row[5] = '1.00:1'               # gap placeholder
+            row[6] = s['og']                # on-ground
+            row[7] = ds                     # days supply
+            row[8] = ds_cvp                 # DS + CVP
+            # Cols 9-14: 6-month rolling history
+            for i, v in enumerate(monthly_vals):
+                row[9 + i] = v
+            row[15] = r3m                   # R3M avg
+            row[16] = ho_trend              # H/O trend (delta)
+            row[17] = ld['r3m_leads']       # R3M leads
+            row[18] = lead_trend            # lead trend (delta)
+            row[19] = ld['r3m_td']          # R3M completed TDs
+            row[20] = td_trend              # TD trend (delta)
+            row[21] = ld['td_wknd']         # TD weekend
+            row[22] = ld['td_prog']         # TD program
+            # Matchback percentages (sales matchback)
             mb = dealer_mb.get(dk, {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
             ms = mb['sales'] or 1
             row[23] = round(mb['mb30'] / ms, 3)
@@ -715,6 +827,12 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
             row[25] = round(mb['mb90'] / ms, 3)
             row[26] = round(mb['mb_all'] / ms, 3)
             ws.append(row)
+
+            # Track TD-to-sale pct for post-process injection
+            tds = td_to_sale.get(dk, {'pct': 0.0})
+            tds_map[dk.title()] = tds.get('pct', 0.0)
+
+    return tds_map
 
 
 # ═══════════════════════════════════════════════════════════════════════

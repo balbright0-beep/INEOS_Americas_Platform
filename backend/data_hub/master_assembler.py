@@ -123,8 +123,20 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Dealer Performance Dashboard ═══
     ws_dpd = wb.create_sheet("Dealer Performance Dashboard")
-    build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads, urban_science, dealer_mb)
+    tds_map = build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads, urban_science, dealer_mb)
     print("  Dealer Performance Dashboard: populated from export data")
+
+    # Persist TD-to-sale map for post-process injection (processor doesn't read tds col)
+    if tds_map:
+        try:
+            import json as _json
+            tds_path = os.path.join(cache_dir, 'data', 'dpd_tds.json')
+            os.makedirs(os.path.dirname(tds_path), exist_ok=True)
+            with open(tds_path, 'w') as _f:
+                _json.dump(tds_map, _f)
+            print(f"  DPD TD-to-sale: {len(tds_map)} dealers saved for post-process")
+        except Exception as _e:
+            print(f"  DPD TD-to-sale save warning: {_e}")
 
     # ═══ SHEET: Dealer Inventory Report ═══
     ws_inv = wb.create_sheet("Dealer Inventory Report")
