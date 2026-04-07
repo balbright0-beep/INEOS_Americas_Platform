@@ -80,27 +80,40 @@ def _parse_pivot_sheet(filepath, sheet_name):
     """Parse a Santander pivot sheet.
 
     Layout:
-    - Row 14-ish: column headers (Applications, Mix, etc.)
+    - Column groups: Applications (cols 2-9), Mix (10-17), Apps WoW (18-25),
+      WoW % (26-33), Apps MoM (34-41), MoM % (42-49), Total Applications (50)
     - Row 15: "Row Labels" + sub-column numbers
-    - Rows 16+: monthly rows (label = YYYY-MM-DD date) with col 50 = Total
-    - After monthly rows: daily rows (label = day number 1-31) with col 50 = daily total
-    - May have multiple month+daily sections
-    - Ends with "Grand Total" row
+    - Rows 16+: monthly rows (date labels) + daily rows (day numbers 1-31)
+
+    For filtered files (Product=Retail/Lease), col 50 may be empty.
+    Fallback: sum the "Applications" group cols 2-9.
     """
     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None, engine='openpyxl', dtype=str)
 
-    # Find the "Total Applications" column (col 50 / AY) or fallback
-    total_col = 50 if len(df.columns) > 50 else len(df.columns) - 1
+    def _read_count(row_idx):
+        """Get count for a row. Try col 50 (Total Applications) first,
+        then sum cols 2-9 (Applications group) as fallback."""
+        # Try col 50 (AY = Total Applications)
+        if len(df.columns) > 50:
+            try:
+                val = str(df.iloc[row_idx, 50]).strip()
+                if val and val not in ('nan', 'None', ''):
+                    c = int(float(val))
+                    if c > 0:
+                        return c
+            except (ValueError, TypeError):
+                pass
 
-    # Also check col 2 as some files use it for the primary count
-    # Determine which column has the better data by checking header row
-    header_row = None
-    for i in range(12, 16):
-        if i < len(df):
-            val = str(df.iloc[i, total_col]).strip() if pd.notna(df.iloc[i, total_col]) else ''
-            if 'Total' in val or 'Application' in val or 'Funding' in val:
-                header_row = i
-                break
+        # Fallback: sum cols 2-9 (Applications sub-columns)
+        total = 0
+        for col in range(2, min(10, len(df.columns))):
+            try:
+                val = str(df.iloc[row_idx, col]).strip()
+                if val and val not in ('nan', 'None', ''):
+                    total += int(float(val))
+            except (ValueError, TypeError):
+                pass
+        return total
 
     # Find data start (row after "Row Labels")
     data_start = None
@@ -116,7 +129,6 @@ def _parse_pivot_sheet(filepath, sheet_name):
     monthly = {}
     daily = {}
     current_month = None
-    current_year_month = None
 
     for i in range(data_start, len(df)):
         label = df.iloc[i, 1] if pd.notna(df.iloc[i, 1]) else None
@@ -127,26 +139,19 @@ def _parse_pivot_sheet(filepath, sheet_name):
         if label_str == 'Grand Total':
             break
 
-        # Get the count from col 50 (AY = Total Applications)
-        count = 0
-        try:
-            count = int(float(str(df.iloc[i, total_col]).strip()))
-        except (ValueError, TypeError):
-            pass
+        count = _read_count(i)
 
         # Check if this is a monthly row (date-like) or daily row (number)
         try:
             dt = pd.to_datetime(label)
-            # This is a monthly row
             ym = dt.strftime('%Y-%m')
             monthly[ym] = count
             current_month = dt
-            current_year_month = ym
             continue
         except (ValueError, TypeError):
             pass
 
-        # This is a daily row (day number within the current month)
+        # Daily row (day number within current month)
         try:
             day_num = int(float(label_str))
             if current_month and 1 <= day_num <= 31:
@@ -155,7 +160,7 @@ def _parse_pivot_sheet(filepath, sheet_name):
                     date_str = day_date.strftime('%Y-%m-%d')
                     daily[date_str] = count
                 except ValueError:
-                    pass  # Invalid day for month (e.g., Feb 30)
+                    pass
         except (ValueError, TypeError):
             pass
 
