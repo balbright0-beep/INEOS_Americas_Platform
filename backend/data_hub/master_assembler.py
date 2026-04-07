@@ -138,9 +138,9 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Matchback Report ═══
     ws_mb = wb.create_sheet("Matchback Report")
-    if leads is not None and len(leads) > 0:
+    if (leads is not None and len(leads) > 0) or (urban_science is not None and len(urban_science) > 0):
         from data_hub.sheet_builders import build_matchback_sheet
-        build_matchback_sheet(ws_mb, export_rows, leads)
+        build_matchback_sheet(ws_mb, export_rows, leads, urban_science)
     else:
         for i in range(5):
             ws_mb.append([""] * 20)
