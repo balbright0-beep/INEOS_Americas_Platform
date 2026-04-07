@@ -376,6 +376,10 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
     cur_month = today.strftime('%Y-%m')
     prev_month = (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
     prev_year_month = f'{today.year - 1}-{today.strftime("%m")}'
+    # Same-day-of-month cutoff so prior MTD compares apples-to-apples:
+    # if today is the 7th, only count handovers on day 1-7 of prior month
+    # (and prior-year same month).
+    cur_day = today.day
 
     # Region order matches the known-good RS exactly
     region_order = ['Internal/Fleet/Rental', 'Central', 'Western', 'Mexico',
@@ -450,9 +454,11 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
             if r['is_cvp']:
                 dealer_data[dk]['cvp'] += 1
 
-        if ho_ym == prev_month:
+        # Same-day-of-month MTD comparison: prior month and prior-year month
+        # only count days 1..cur_day so we compare same elapsed window.
+        if ho_ym == prev_month and r['ho_date'].day <= cur_day:
             dealer_data[dk]['pm'] += 1
-        if ho_ym == prev_year_month:
+        if ho_ym == prev_year_month and r['ho_date'].day <= cur_day:
             dealer_data[dk]['py'] += 1
 
     # ── Header rows 0-5 ──
@@ -559,6 +565,8 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
     """
     today = datetime.now()
     cur_month = today.strftime('%Y-%m')
+    cur_day = today.day
+    prev_month_str = (today.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
 
     # Build 6 recent month labels (e.g., for Apr 2026: Oct,Nov,Dec,Jan,Feb,Mar)
     recent_months = []
@@ -571,7 +579,8 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
     # Accumulate per-dealer stats
     stats = defaultdict(lambda: {
         'market': '', 'mtd_ho': 0, 'cvp': 0, 'og': 0,
-        'monthly': defaultdict(int),  # ym → handovers
+        'pm_mtd': 0,  # prior-month handovers up to same day-of-month as today
+        'monthly': defaultdict(int),  # ym → handovers (full month)
     })
 
     # Lead stats by dealer
@@ -611,6 +620,9 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
                 stats[dk]['mtd_ho'] += 1
                 if r['is_cvp']:
                     stats[dk]['cvp'] += 1
+            # Same-day-of-month prior MTD for fair comparison
+            if ho_ym == prev_month_str and r['ho_date'].day <= cur_day:
+                stats[dk]['pm_mtd'] += 1
 
     # Use pre-computed matchback (or empty default)
     if dealer_mb is None:
@@ -643,8 +655,10 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
         dealers.sort(key=lambda x: -x[1]['mtd_ho'])
 
         for dk, s in dealers:
-            # Monthly sales history
-            prev_mo_val = s['monthly'].get(recent_months[-1], 0)  # last of 6 months = prev month
+            # Monthly sales history — use day-of-month-aligned prior MTD
+            # so the dashboard's prior-month delta compares the same elapsed
+            # window in both months (e.g., Apr 1-7 vs Mar 1-7).
+            prev_mo_val = s['pm_mtd']
             mtd_val = s['mtd_ho']
 
             # R3M (rolling 3-month) - last 3 months
