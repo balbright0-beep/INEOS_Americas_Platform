@@ -162,20 +162,27 @@ class DataHub:
                     if key.endswith('_raw'):
                         continue
 
-                    if key in ('_santander_json', 'santander'):
-                        # Write to both locations
-                        sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
-                        sant_data_path = os.path.join(data_dir, 'santander.json')
-                        # Only write if this is NEWER/LARGER than what's already there
-                        existing_size = os.path.getsize(sant_data_path) if os.path.exists(sant_data_path) else 0
-                        if len(cf.data) >= existing_size:
+                    if key == '_santander_json':
+                        # STALE legacy entry — delete it from DB, don't restore
+                        try:
+                            db.delete(cf)
+                            db.commit()
+                            print(f"  Deleted stale _santander_json from DB")
+                        except Exception:
+                            pass
+                        continue
+
+                    if key in ('santander', 'santander_finance', 'santander_lease'):
+                        # Santander JSON → write to data/ dir
+                        sant_data_path = os.path.join(data_dir, f'{key}.json')
+                        with open(sant_data_path, 'wb') as f:
+                            f.write(cf.data)
+                        # Also write santander_latest.json for backward compat
+                        if key == 'santander':
+                            sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
                             with open(sant_path, 'wb') as f:
                                 f.write(cf.data)
-                            with open(sant_data_path, 'wb') as f:
-                                f.write(cf.data)
-                            print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
-                        else:
-                            print(f"  Skipped stale santander DB entry ({len(cf.data)} bytes < {existing_size} on disk)")
+                        print(f"  Restored {key} JSON from DB ({len(cf.data):,} bytes)")
                         count += 1
                         continue
 
@@ -331,16 +338,18 @@ class DataHub:
 
             elif file_type == 'santander':
                 data = ingest_santander(filepath)
-                # Store raw + update cache
                 sant_json = json.dumps(data, default=str)
+                # Write to both locations
                 with open(os.path.join(self.cache_dir, 'santander_latest.json'), 'w') as f:
                     f.write(sant_json)
+                with open(os.path.join(self.cache_dir, 'data', 'santander.json'), 'w') as f:
+                    f.write(sant_json)
                 update_santander_cache(self.santander_cache_path, data)
-                total = sum(len(v) for v in data.values())
+                total = sum(len(v) for v in data.values() if isinstance(v, (list, dict)))
                 self._update_status('santander', total, filename)
-                # Persist Santander JSON to DB
+                # Persist to DB with key='santander' (not '_santander_json')
                 try:
-                    self._save_to_db('_santander_json', sant_json.encode('utf-8'), total)
+                    self._save_to_db('santander', sant_json.encode('utf-8'), total)
                 except Exception:
                     pass
                 result['rows'] = total
