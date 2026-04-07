@@ -573,11 +573,40 @@ def _write_leads_sheet(ws, leads, qm_leads=None):
         headers.append('')
     ws.append(headers)
 
-    # Build QM lead ID set for cross-reference
+    # Helper: normalize a lead ID so the two sources can be compared apples-to-apples.
+    # C4C may export IDs as int-like strings ("33000123"), Excel may coerce to float
+    # ("33000123.0"), and either side can carry whitespace or case differences.
+    def _norm_lead_id(v):
+        if v is None:
+            return ''
+        s = str(v).strip()
+        if not s or s.lower() in ('nan', 'none', 'nat'):
+            return ''
+        # Strip a single trailing ".0" that float→str conversion adds
+        if s.endswith('.0') and s[:-2].isdigit():
+            s = s[:-2]
+        return s.upper()
+
+    # Build QM lead ID set for cross-reference (normalized)
     qm_lead_ids = set()
     if qm_leads is not None and len(qm_leads) > 0 and 'lead_id' in qm_leads.columns:
-        qm_lead_ids = set(qm_leads['lead_id'].astype(str).str.strip().tolist())
+        qm_lead_ids = {_norm_lead_id(v) for v in qm_leads['lead_id'].tolist()}
+        qm_lead_ids.discard('')
         print(f"  QM lead IDs for cross-reference: {len(qm_lead_ids)}")
+        # Sample for diagnostics
+        sample = list(qm_lead_ids)[:3]
+        if sample:
+            print(f"    Sample QM lead IDs: {sample}")
+    else:
+        print("  [WARN] qm_leads not provided or empty — QM split will rely on model_interest only")
+
+    # Diagnostics: count how the QM flag is set across all rows
+    qm_via_xref = 0
+    qm_via_body = 0
+    qm_via_model = 0
+    qm_total = 0
+    sw_total = 0
+    c4c_id_sample = []
 
     # Write data rows in the correct column order
     for _, r in leads.iterrows():
@@ -594,13 +623,40 @@ def _write_leads_sheet(ws, leads, qm_leads=None):
         while len(row) < 40:
             row.append('')
 
-        # Set QM flag at index 39 — check if lead_id is in QM leads
-        lead_id = str(r.get('lead_id', '')).strip()
-        body_type = str(r.get('body_type', '')).lower()
-        is_qm = lead_id in qm_lead_ids or body_type == 'qm'
+        # Determine QM flag — three sources, in order of trust:
+        #   1. lead_id appears in the QM leads cross-reference file
+        #   2. body_type column already says "qm" (set upstream by qm_leads ingest)
+        #   3. Model of Interest mentions Quartermaster (C4C native column)
+        lead_id_norm = _norm_lead_id(r.get('lead_id', ''))
+        body_type = str(r.get('body_type', '')).strip().lower()
+        model_int = str(r.get('model_interest', '')).strip().lower()
+
+        if len(c4c_id_sample) < 3 and lead_id_norm:
+            c4c_id_sample.append(lead_id_norm)
+
+        is_qm = False
+        if lead_id_norm and lead_id_norm in qm_lead_ids:
+            is_qm = True
+            qm_via_xref += 1
+        elif body_type == 'qm':
+            is_qm = True
+            qm_via_body += 1
+        elif 'quartermaster' in model_int:
+            is_qm = True
+            qm_via_model += 1
+
+        if is_qm:
+            qm_total += 1
+        else:
+            sw_total += 1
         row[39] = 'Yes' if is_qm else 'No'
 
         ws.append(row)
+
+    print(f"  Lead body classification: SW={sw_total}, QM={qm_total} "
+          f"(xref={qm_via_xref}, body_type={qm_via_body}, model_interest={qm_via_model})")
+    if c4c_id_sample:
+        print(f"    Sample C4C lead IDs: {c4c_id_sample}")
 
 
 def _write_rbm_sheet(ws, sap, mkt_map):

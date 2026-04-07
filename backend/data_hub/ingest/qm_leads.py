@@ -107,23 +107,26 @@ def _parse_xlsx_raw(filepath):
 
 def _process_qm(df):
     """Process QM leads DataFrame."""
-    # Try to identify key columns
+    # Try to identify key columns. Order matters: more specific patterns first
+    # so 'Lead Name' isn't accidentally renamed to lead_id by the 'Name' rule.
+    col_patterns = [
+        ('lead id', 'lead_id'),
+        ('lead name', 'lead_name'),
+        ('retailer', 'retailer_name'),
+        ('status', 'lead_status'),
+        ('created', 'created_on'),
+        ('country', 'country'),
+        ('source', 'source'),
+    ]
     rename = {}
-    col_patterns = {
-        'Lead ID': 'lead_id',
-        'Name': 'lead_name',
-        'Retailer': 'retailer_name',
-        'Status': 'lead_status',
-        'Created': 'created_on',
-        'Country': 'country',
-        'Source': 'source',
-    }
+    used_internal = set()
     for actual_col in df.columns:
-        for pattern, internal in col_patterns.items():
-            if pattern.lower() in str(actual_col).lower():
-                if internal not in rename.values():
-                    rename[actual_col] = internal
-                    break
+        col_lower = str(actual_col).lower()
+        for pattern, internal in col_patterns:
+            if pattern in col_lower and internal not in used_internal:
+                rename[actual_col] = internal
+                used_internal.add(internal)
+                break
     df = df.rename(columns=rename)
 
     # Parse dates
@@ -135,9 +138,14 @@ def _process_qm(df):
 
     # Drop empty rows
     if 'lead_id' in df.columns:
-        df = df[df['lead_id'].astype(str).str.strip() != '']
-        df = df[df['lead_id'].astype(str) != 'nan']
-        df = df[df['lead_id'].astype(str) != 'None']
+        df['lead_id'] = df['lead_id'].astype(str).str.strip()
+        df = df[df['lead_id'] != '']
+        df = df[~df['lead_id'].isin(['nan', 'None', 'NaT'])]
+    else:
+        print("  [WARN] QM Leads file has no recognizable Lead ID column — "
+              f"available columns: {list(df.columns)[:10]}")
 
     print(f"  QM Leads: {len(df)} rows")
+    if 'lead_id' in df.columns and len(df) > 0:
+        print(f"    Sample QM lead IDs from source: {df['lead_id'].head(3).tolist()}")
     return df
