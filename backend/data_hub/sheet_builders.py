@@ -867,6 +867,161 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
 # Santander sheets
 # ═══════════════════════════════════════════════════════════════════════
 
+def build_matchback_sheet(ws, export_rows, leads):
+    """Populate Matchback Report by cross-referencing leads with retail sales.
+
+    Matchback = for each retail sale, check if a lead from the same dealer
+    existed within 30/60/90/120 days prior. The percentage of matched sales
+    is the matchback rate.
+
+    Layout: rows 0-2=header, rows 3+=dealer rows, then Total, then
+    blank rows, then "Since Inception" section.
+    Cols: [1]=Retailer, [2]=R120 Leads, [3]=All-time Leads,
+          [5]=R120 Retail Sales, [7]=R30 MB count, [8]=R30 MB%,
+          [9]=R60 count, [10]=R60%, [11]=R90 count, [12]=R90%,
+          [13]=R120 count, [14]=R120%, [15]=All-time MB count, [16]=All-time MB%
+    """
+    today = datetime.now()
+
+    # Build per-dealer lead dates (from leads data)
+    dealer_lead_dates = defaultdict(list)  # dealer_upper → [date, date, ...]
+    if leads is not None and len(leads) > 0:
+        for _, lr in leads.iterrows():
+            dealer = _safe_str(lr.get('retailer_name', ''))
+            if not dealer:
+                continue
+            dealer = dealer.replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
+            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+            if ld:
+                dealer_lead_dates[dealer].append(ld)
+
+    # Build per-dealer sale dates (from export rows with handover dates, retail only)
+    dealer_sale_dates = defaultdict(list)
+    for r in export_rows:
+        if r['country_code'] not in ('US', 'CA', 'MX'):
+            continue
+        if r.get('bt_cat', 'Retail') != 'Retail':
+            continue
+        if not r['ho_date']:
+            continue
+        dealer_sale_dates[r['dealer_upper']].append(r['ho_date'])
+
+    # Compute matchback per dealer
+    r120_start = today - timedelta(days=120)
+    all_dealers = sorted(set(list(dealer_lead_dates.keys()) + list(dealer_sale_dates.keys())))
+
+    # Headers
+    ws.append([''] * 20)
+    ws.append(['', 'Retailer', 'R120 Brand Leads', 'All Time Leads', '',
+               'R120 Retail Sales', '', 'R30 MB Count', 'R30 MB%',
+               'R60 MB Count', 'R60 MB%', 'R90 MB Count', 'R90 MB%',
+               'R120 MB Count', 'R120 MB%', 'All Time MB Count', 'All Time MB%'])
+    ws.append([''] * 20)
+
+    # Totals
+    t = {'leads_120': 0, 'leads_all': 0, 'sales_120': 0, 'sales_all': 0,
+         'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb120': 0, 'mb_all': 0}
+
+    for dk in all_dealers:
+        if not dk or dk in ('', 'INEOS CA STOCK'):
+            continue
+
+        lead_dates = sorted(dealer_lead_dates.get(dk, []))
+        sale_dates = sorted(dealer_sale_dates.get(dk, []))
+
+        r120_leads = sum(1 for d in lead_dates if d >= r120_start)
+        all_leads = len(lead_dates)
+        r120_sales = sum(1 for d in sale_dates if d >= r120_start)
+        all_sales = len(sale_dates)
+
+        # Matchback: for each sale, find if a lead existed within N days prior
+        mb30 = mb60 = mb90 = mb120 = mb_all = 0
+        for sd in sale_dates:
+            for ld in lead_dates:
+                diff = (sd - ld).days
+                if 0 <= diff <= 120:
+                    mb120 += 1
+                    if diff <= 90:
+                        mb90 += 1
+                    if diff <= 60:
+                        mb60 += 1
+                    if diff <= 30:
+                        mb30 += 1
+                    break  # count each sale only once
+            # All-time match (any lead before sale)
+            for ld in lead_dates:
+                if ld <= sd:
+                    mb_all += 1
+                    break
+
+        row = [''] * 20
+        row[1] = dk.title()
+        row[2] = r120_leads
+        row[3] = all_leads
+        row[5] = r120_sales
+        row[7] = mb30
+        row[8] = (mb30 / r120_sales) if r120_sales > 0 else 0
+        row[9] = mb60
+        row[10] = (mb60 / r120_sales) if r120_sales > 0 else 0
+        row[11] = mb90
+        row[12] = (mb90 / r120_sales) if r120_sales > 0 else 0
+        row[13] = mb120
+        row[14] = (mb120 / r120_sales) if r120_sales > 0 else 0
+        row[15] = mb_all
+        row[16] = (mb_all / all_sales) if all_sales > 0 else 0
+        ws.append(row)
+
+        t['leads_120'] += r120_leads
+        t['leads_all'] += all_leads
+        t['sales_120'] += r120_sales
+        t['sales_all'] += all_sales
+        t['mb30'] += mb30
+        t['mb60'] += mb60
+        t['mb90'] += mb90
+        t['mb120'] += mb120
+        t['mb_all'] += mb_all
+
+    # Total row
+    s120 = t['sales_120'] or 1
+    s_all = t['sales_all'] or 1
+    row = [''] * 20
+    row[1] = 'Total'
+    row[2] = t['leads_120']
+    row[3] = t['leads_all']
+    row[5] = t['sales_120']
+    row[7] = t['mb30']
+    row[8] = t['mb30'] / s120
+    row[9] = t['mb60']
+    row[10] = t['mb60'] / s120
+    row[11] = t['mb90']
+    row[12] = t['mb90'] / s120
+    row[13] = t['mb120']
+    row[14] = t['mb120'] / s120
+    row[15] = t['mb_all']
+    row[16] = t['mb_all'] / s_all
+    ws.append(row)
+
+    # Blank rows then Since Inception section
+    ws.append([''] * 20)
+    ws.append(['', 'Since Inception'] + [''] * 18)
+    ws.append(['', 'Retailer', 'All Time Leads', '', '',
+               'All Time Sales', '', '', '', '', '', '', '', '', '',
+               'All Time MB Count', 'All Time MB%'])
+
+    for dk in all_dealers:
+        if not dk or dk in ('', 'INEOS CA STOCK'):
+            continue
+        all_leads = len(dealer_lead_dates.get(dk, []))
+        all_sales = len(dealer_sale_dates.get(dk, []))
+        row = [''] * 20
+        row[1] = dk.title()
+        row[2] = all_leads
+        row[5] = all_sales
+        ws.append(row)
+
+    print(f"  Matchback Report: {len(all_dealers)} dealers, MB30={t['mb30']}/{t['sales_120']}={round(t['mb30']/s120*100,1)}%")
+
+
 def build_santander_sheets(wb, cache_dir):
     """Populate Santander sheets from cached JSON data.
 

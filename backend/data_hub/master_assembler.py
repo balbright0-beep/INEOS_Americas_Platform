@@ -138,8 +138,12 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Matchback Report ═══
     ws_mb = wb.create_sheet("Matchback Report")
-    for i in range(5):
-        ws_mb.append([""] * 20)
+    if leads is not None and len(leads) > 0:
+        from data_hub.sheet_builders import build_matchback_sheet
+        build_matchback_sheet(ws_mb, export_rows, leads)
+    else:
+        for i in range(5):
+            ws_mb.append([""] * 20)
 
     # ═══ GA4 SHEETS ═══
     for ga4_name, sheet_name in [
