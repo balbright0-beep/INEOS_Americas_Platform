@@ -309,9 +309,12 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
         # Handover date from handover report
         ho = ho_map.get(vin, None)
         ho_date = None
+        rev_rec_date = None
         if ho is not None:
             hd = ho.get('handover_date', None) if isinstance(ho, dict) else getattr(ho, 'handover_date', None)
             ho_date = _safe_date(hd)
+            rr = ho.get('rev_rec_date', None) if isinstance(ho, dict) else getattr(ho, 'rev_rec_date', None)
+            rev_rec_date = _safe_date(rr)
 
         # NO fallback to invoice_date — the Master File only uses handover dates
         # from the Handover Report for column 51. Invoice dates would inflate counts.
@@ -351,6 +354,8 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             'plant': _safe_str(r.get('plant_code', '')),
             'trim': _safe_str(r.get('trim', '')),
             'bt_cat': _classify_bt(channel, billto_map.get(vin, '')),
+            'rev_rec_date': rev_rec_date,
+            'days_on_lot': (ho_date - rev_rec_date).days if (ho_date and rev_rec_date) else None,
         })
 
     return rows, mkt_map
@@ -842,9 +847,18 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
 
         dk_data[dealer]['leads'] += 1
         if not dk_data[dealer]['market']:
-            mkt = _safe_str(lr.get('marketing_unit', ''))
-            if not mkt:
-                mkt = mkt_map.get(dealer, '')
+            # Use mkt_map FIRST (has correct region), fall back to marketing_unit
+            mkt = mkt_map.get(dealer, '')
+            if not mkt or mkt.upper() == 'AMERICAS':
+                # Fuzzy match
+                for k, v in mkt_map.items():
+                    if dealer in k or k in dealer:
+                        mkt = v
+                        break
+            if not mkt or mkt.upper() == 'AMERICAS':
+                mu = _safe_str(lr.get('marketing_unit', ''))
+                if mu and mu.upper() != 'AMERICAS':
+                    mkt = mu
             dk_data[dealer]['market'] = mkt
 
         status = _safe_str(lr.get('retailer_status', lr.get('lead_status', ''))).lower()
@@ -944,11 +958,30 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
 
 def build_matchback_sheet(ws, export_rows, leads, urban_science=None, dealer_mb=None):
     """Populate Matchback Report using pre-computed dealer_mb data.
-    No expensive re-computation — uses dealer_mb from compute_matchback()."""
+    Also computes R120 brand leads per dealer for TD-to-Sale calculation."""
     if dealer_mb is None:
         dealer_mb = {}
 
-    all_dealers = sorted(dealer_mb.keys())
+    # Compute R120 leads per dealer (last 120 days)
+    today = datetime.now()
+    r120_cutoff = today - timedelta(days=120)
+    dealer_r120_leads = defaultdict(int)
+    dealer_all_leads = defaultdict(int)
+    if leads is not None and len(leads) > 0:
+        for _, lr in leads.iterrows():
+            dealer = _safe_str(lr.get('retailer_name', ''))
+            if not dealer:
+                continue
+            dealer = dealer.replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
+            dealer = ' '.join(w for w in dealer.split() if w != 'GRENADIER').strip()
+            if not dealer:
+                continue
+            dealer_all_leads[dealer] += 1
+            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+            if ld and ld >= r120_cutoff:
+                dealer_r120_leads[dealer] += 1
+
+    all_dealers = sorted(set(list(dealer_mb.keys()) + list(dealer_r120_leads.keys())))
 
     # Headers (rows 0-2)
     ws.append([0.0] + [''] * 19)  # row 0: numeric (processor skips)
@@ -963,12 +996,13 @@ def build_matchback_sheet(ws, export_rows, leads, urban_science=None, dealer_mb=
     for dk in all_dealers:
         if not dk:
             continue
-        mb = dealer_mb[dk]
+        mb = dealer_mb.get(dk, {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
         s = mb['sales'] or 1
 
         row = [''] * 20
         row[1] = dk.title()
-        row[2] = 0  # R120 leads (not tracked in dealer_mb)
+        row[2] = dealer_r120_leads.get(dk, 0)  # R120 leads for TD-to-Sale calc
+        row[3] = dealer_all_leads.get(dk, 0)   # All-time leads
         row[5] = mb['sales']
         row[7] = mb['mb30']
         row[8] = round(mb['mb30'] / s, 4)

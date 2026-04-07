@@ -4658,8 +4658,12 @@ const ogT=ogS+ogQ;
 
 var ds=r90T>0?Math.round(ogT/(r90T/30)):0;
 
-const sanMTD=SAN_ALL.reduce((s,v)=>s+v,0);
-const sanDailyAvg=(sanMTD/SAN_DAYS.length).toFixed(1);
+// Santander MTD: only count days in current month that have been reported
+const curMo=new Date().toISOString().slice(0,7);
+const curMoIndices=SAN_DAYS.map((d,i)=>d.slice(0,7)===curMo?i:-1).filter(i=>i>=0);
+const sanMTD=curMoIndices.reduce((s,i)=>s+(SAN_ALL[i]||0),0);
+const sanDaysReported=curMoIndices.length||1;
+const sanDailyAvg=(sanMTD/sanDaysReported).toFixed(1);
 
 const t=TTODAY;
 const l30=TDD.ALL[0].slice(Math.max(0,t-30),t);

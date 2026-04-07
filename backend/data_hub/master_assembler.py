@@ -96,7 +96,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
     # ═══ SHEET: Raw Lead Data ═══
     if leads is not None and len(leads) > 0:
         ws_leads = wb.create_sheet("Raw Lead Data")
-        _write_leads_sheet(ws_leads, leads)
+        _write_leads_sheet(ws_leads, leads, qm_leads)
         print(f"  Raw Lead Data: {len(leads)} rows")
 
     # ═══ SHEET: RBM Assignments ═══
@@ -396,6 +396,31 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         eta_serial = _date_to_serial(eta)
         inv_serial = _date_to_serial(invoice_date)
 
+        # Compute DIS (Days in Stock) from rev_rec_date
+        # - For sold vehicles: ho_date - rev_rec_date
+        # - For on-ground: today - rev_rec_date
+        computed_dis = ''
+        if rev_rec is not None:
+            try:
+                if not pd.isna(rev_rec):
+                    rr_dt = pd.to_datetime(rev_rec, errors='coerce')
+                    if not pd.isna(rr_dt):
+                        if ho_date is not None:
+                            try:
+                                if not pd.isna(ho_date):
+                                    ho_dt = pd.to_datetime(ho_date, errors='coerce')
+                                    if not pd.isna(ho_dt):
+                                        computed_dis = int((ho_dt - rr_dt).days)
+                            except (TypeError, ValueError):
+                                pass
+                        if computed_dis == '':
+                            # On-ground vehicle: today - rev_rec
+                            computed_dis = int((datetime.now() - rr_dt).days)
+                        if computed_dis < 0:
+                            computed_dis = 0
+            except (TypeError, ValueError):
+                pass
+
         # Build row — 80 columns to match Export sheet layout
         # ALL indices must match what the processor reads
         row = [''] * 80
@@ -430,7 +455,8 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         row[53] = vessel           # [53] Vessel
         row[54] = market           # [54] Market Override
         row[55] = rr_serial        # [55] Rev Rec Date (serial number)
-        row[57] = dis              # [57] Days in Stock / DIS
+        # [57] DIS: prefer computed (from rev_rec_date), fall back to stock_pipeline
+        row[57] = computed_dis if computed_dis != '' else (dis if dis else 0)
         row[58] = bill_to          # [58] Bill To Dealer
         row[62] = cvp              # [62] CVP flag
         row[63] = demo             # [63] Demo flag
@@ -440,10 +466,12 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         ws.append(row)
 
 
-def _write_leads_sheet(ws, leads):
+def _write_leads_sheet(ws, leads, qm_leads=None):
     """Write Raw Lead Data sheet in ORIGINAL C4C column order.
 
     The processor reads Raw Lead Data by column INDEX (not name).
+    QM leads are identified by cross-referencing with the qm_leads file
+    — if a lead_id appears in qm_leads, col[39] = 'Yes' (QM flag).
     Critical indices:
       [2]  = Retailer Name (dealer)
       [12] = Marketing Unit (market)
@@ -523,6 +551,12 @@ def _write_leads_sheet(ws, leads):
         headers.append('')
     ws.append(headers)
 
+    # Build QM lead ID set for cross-reference
+    qm_lead_ids = set()
+    if qm_leads is not None and len(qm_leads) > 0 and 'lead_id' in qm_leads.columns:
+        qm_lead_ids = set(qm_leads['lead_id'].astype(str).str.strip().tolist())
+        print(f"  QM lead IDs for cross-reference: {len(qm_lead_ids)}")
+
     # Write data rows in the correct column order
     for _, r in leads.iterrows():
         row = []
@@ -538,9 +572,11 @@ def _write_leads_sheet(ws, leads):
         while len(row) < 40:
             row.append('')
 
-        # Set QM flag at index 39 if available
+        # Set QM flag at index 39 — check if lead_id is in QM leads
+        lead_id = str(r.get('lead_id', '')).strip()
         body_type = str(r.get('body_type', '')).lower()
-        row[39] = 'Yes' if body_type == 'qm' else ''
+        is_qm = lead_id in qm_lead_ids or body_type == 'qm'
+        row[39] = 'Yes' if is_qm else 'No'
 
         ws.append(row)
 
