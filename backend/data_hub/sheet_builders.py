@@ -287,7 +287,7 @@ def _build_market_map(sap, template_path=None):
         "MILEONE": "Northeast", "NORTH SHORE": "Northeast",
         "KO": "Northeast", "CROWN DUBLIN": "Northeast",
         "CURRY": "Northeast", "RDS": "Northeast",
-        "WARNER": "Southeast", "HOLMAN": "Southeast",
+        "WARNER": "Central", "HOLMAN": "Southeast",
         "REGAL": "Southeast", "CROWN": "Southeast",
         "VICTORY": "Southeast", "CHARLOTTE": "Southeast",
         "HENDRICK": "Southeast", "GREENSBORO": "Southeast",
@@ -304,6 +304,15 @@ def _build_market_map(sap, template_path=None):
     for k, v in extras.items():
         if k not in mkt_map:
             mkt_map[k] = v
+
+    # 2b. HARD OVERRIDES — these always win, even over template extraction.
+    # Use this for dealers whose region was previously misclassified in
+    # baked-in dashboard constants and we need to force the correct value.
+    hard_overrides = {
+        "WARNER": "Central",
+    }
+    for k, v in hard_overrides.items():
+        mkt_map[k] = v
 
     # 3. SAP data as fallback (skip "AMERICAS" - it's useless)
     for col in ('market_area', 'region_group'):
@@ -857,6 +866,8 @@ def build_inventory_sheet(ws, export_rows, mkt_map):
             continue
         dk = r['dealer_upper']
         if 'HERTZ' in dk:
+            continue
+        if 'RETAIL PARTNER NAME' in dk or not dk.strip():
             continue
         if dk not in dealers:
             dealers[dk] = {'name': r['dealer'], 'market': r['market']}
