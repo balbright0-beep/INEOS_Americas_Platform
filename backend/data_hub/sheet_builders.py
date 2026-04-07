@@ -633,44 +633,63 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
         dealers.sort(key=lambda x: -x[1]['mtd_ho'])
 
         for dk, s in dealers:
-            # Monthly values for 6 recent months
-            mo_vals = [s['monthly'].get(ym, 0) for ym in recent_months]
+            # Monthly sales history
+            prev_mo_val = s['monthly'].get(recent_months[-1], 0)  # last of 6 months = prev month
+            mtd_val = s['mtd_ho']
 
-            # R3M (rolling 3-month average)
+            # R3M (rolling 3-month) - last 3 months
             r3m_vals = [s['monthly'].get(ym, 0) for ym in prev_3_months]
             r3m = round(sum(r3m_vals) / 3, 1) if r3m_vals else 0
-            r3m_total = sum(r3m_vals)
+
+            # Prior R3M (the 3 months before that) for trend
+            prior_3_months = recent_months[:3]
+            prior_r3m_vals = [s['monthly'].get(ym, 0) for ym in prior_3_months]
+            prior_r3m = round(sum(prior_r3m_vals) / 3, 1) if prior_r3m_vals else 0
+
+            # H/O Trend = (current R3M / prior R3M) - 1, or just ratio
+            ho_trend = round(r3m / prior_r3m, 2) if prior_r3m > 0 else 1.0
 
             # Lead data
             ld = lead_stats.get(dk, {'leads': 0, 'td_booked': 0, 'td_completed': 0})
+            lead_trend = 1.0  # Would need historical lead data
+            td_trend = 1.0
 
+            # Processor reads:
+            # [2]=ho [3]=cvp [4]=ws [5]=ws_gap [6]=og [7]=dol [8]=dsc
+            # [9-12]=sep/oct/nov/dec (older months, 0 for now)
+            # [13]=prev [14]=mtd [15]=r3m_avg [16]=ho_trend
+            # [17]=r3m_leads [18]=lead_trend [19]=r3m_td [20]=td_trend
+            # [21]=td_wknd [22]=td_prog [23-26]=mb30/60/90/at
             row = [''] * 27
             row[0] = region
             row[1] = dk.title()
-            row[2] = s['mtd_ho']
-            row[3] = s['cvp']
-            row[4] = 0  # wholesale
-            row[5] = '1.00:1'  # gap
-            row[6] = s['og']
-            row[7] = 0  # dollar sales
-            row[8] = 0  # dollar count
-            for i, mv in enumerate(mo_vals):
-                row[9 + i] = mv
-            row[15] = r3m
-            row[16] = r3m_total
-            row[17] = ld['leads']
-            row[18] = ld['leads']  # total leads
-            row[19] = ld['td_booked']
-            row[20] = ld['td_booked']
-            row[21] = ld['td_completed']
-            row[22] = round(ld['td_completed'] / ld['td_booked'], 3) if ld['td_booked'] > 0 else 0
-            # Matchback percentages from Urban Science + leads matching
+            row[2] = mtd_val           # handovers MTD
+            row[3] = s['cvp']          # CVP
+            row[4] = 0                 # wholesale (not tracked)
+            row[5] = '1.00:1'          # W/S:H/O gap
+            row[6] = s['og']           # on-ground
+            row[7] = 0                 # dol (overridden by INV recompute)
+            row[8] = 0                 # dollar count
+            # Cols 9-12: older monthly history (optional)
+            for i, ym in enumerate(recent_months[:4]):
+                row[9 + i] = s['monthly'].get(ym, 0)
+            row[13] = prev_mo_val      # prev month
+            row[14] = mtd_val          # current mtd
+            row[15] = r3m              # R3M avg
+            row[16] = ho_trend         # H/O trend ratio
+            row[17] = ld['leads']      # R3M leads
+            row[18] = lead_trend       # lead trend
+            row[19] = ld['td_booked']  # R3M TD bookings
+            row[20] = td_trend         # TD trend
+            row[21] = 0                # TD weekend
+            row[22] = 0                # TD program
+            # Matchback percentages
             mb = dealer_mb.get(dk, {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
             ms = mb['sales'] or 1
-            row[23] = round(mb['mb30'] / ms, 3)   # MB30% (decimal, processor * 100)
-            row[24] = round(mb['mb60'] / ms, 3)   # MB60%
-            row[25] = round(mb['mb90'] / ms, 3)   # MB90%
-            row[26] = round(mb['mb_all'] / ms, 3) # MB all-time%
+            row[23] = round(mb['mb30'] / ms, 3)
+            row[24] = round(mb['mb60'] / ms, 3)
+            row[25] = round(mb['mb90'] / ms, 3)
+            row[26] = round(mb['mb_all'] / ms, 3)
             ws.append(row)
 
 
