@@ -534,6 +534,10 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
             row[6] = dd['total']
             row[7] = dd['pm']
             row[8] = dd['py']
+            # ppm = current/prev_month ratio (processor * 100)
+            row[9] = round(dd['total'] / dd['pm'], 3) if dd['pm'] > 0 else ''
+            # ppy = current/prev_year ratio
+            row[10] = round(dd['total'] / dd['py'], 3) if dd['py'] > 0 else ''
             row[15] = dd['cvp']
             ws.append(row)
 
