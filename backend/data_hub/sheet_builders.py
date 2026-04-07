@@ -104,6 +104,55 @@ def _safe_date(val):
         return None
 
 
+def compute_matchback(leads, urban_science):
+    """Compute per-dealer matchback ONCE for reuse across all builders.
+    Returns dict: dealer_upper → {mb30, mb60, mb90, mb_all, sales}
+    """
+    result = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
+
+    if leads is None or len(leads) == 0 or urban_science is None or len(urban_science) == 0:
+        return result
+
+    def _frags(name):
+        n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
+        return set(n[i:i+4] for i in range(len(n)-3)) if len(n) >= 4 else set()
+
+    def _norm(d):
+        d = str(d).replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
+        return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
+
+    # Index leads by dealer (compute once)
+    dlr_leads = defaultdict(list)
+    for _, lr in leads.iterrows():
+        dk = _norm(_safe_str(lr.get('retailer_name', '')))
+        ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+        cf = _frags(lr.get('customer_name', ''))
+        if dk and ld and cf:
+            dlr_leads[dk].append((ld, cf))
+
+    # Match each sale to leads
+    for _, sr in urban_science.iterrows():
+        dk = _norm(_safe_str(sr.get('dealer_name', '')))
+        sd = _safe_date(sr.get('sale_date', None))
+        bf = _frags(sr.get('customer_last_name', ''))
+        if not dk or not sd or not bf:
+            continue
+        result[dk]['sales'] += 1
+        for ld, lf in dlr_leads.get(dk, []):
+            diff = (sd - ld).days
+            if 0 <= diff <= 365 and (bf & lf):
+                if diff <= 30: result[dk]['mb30'] += 1
+                if diff <= 60: result[dk]['mb60'] += 1
+                if diff <= 90: result[dk]['mb90'] += 1
+                result[dk]['mb_all'] += 1
+                break
+
+    total_sales = sum(d['sales'] for d in result.values())
+    total_mb30 = sum(d['mb30'] for d in result.values())
+    print(f"  [Matchback] Computed: {len(dlr_leads)} lead dealers, {len(result)} sale dealers, MB30={total_mb30}/{total_sales}")
+    return result
+
+
 def _classify_bt(channel, billto_val=''):
     """Classify a vehicle as Retail/Fleet/Internal/Enterprise.
     Matches the exact logic in the assembler's Export sheet column 58."""
@@ -487,7 +536,7 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
 # Dealer Performance Dashboard (DPD)
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None):
+def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, dealer_mb=None):
     """Populate DPD sheet — exactly 27 columns per dealer row.
 
     Processor reads rows 3+:
@@ -553,40 +602,9 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None):
                 if r['is_cvp']:
                     stats[dk]['cvp'] += 1
 
-    # Compute per-dealer matchback (same logic as LK sheet)
-    dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
-    if urban_science is not None and len(urban_science) > 0 and leads is not None and len(leads) > 0:
-        def _dpd_frags(name):
-            n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
-            return set(n[i:i+4] for i in range(len(n)-3)) if len(n) >= 4 else set()
-
-        def _dpd_norm(d):
-            d = str(d).replace(' INEOS Grenadier','').replace(' INEOS','').strip().upper()
-            return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
-
-        dlr_lead_idx = defaultdict(list)
-        for _, lr in leads.iterrows():
-            dk = _dpd_norm(_safe_str(lr.get('retailer_name', '')))
-            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
-            cf = _dpd_frags(lr.get('customer_name', ''))
-            if dk and ld and cf:
-                dlr_lead_idx[dk].append((ld, cf))
-
-        for _, sr in urban_science.iterrows():
-            dk = _dpd_norm(_safe_str(sr.get('dealer_name', '')))
-            sd = _safe_date(sr.get('sale_date', None))
-            bf = _dpd_frags(sr.get('customer_last_name', ''))
-            if not dk or not sd or not bf:
-                continue
-            dealer_mb[dk]['sales'] += 1
-            for ld, lf in dlr_lead_idx.get(dk, []):
-                diff = (sd - ld).days
-                if 0 <= diff <= 365 and (bf & lf):
-                    if diff <= 30: dealer_mb[dk]['mb30'] += 1
-                    if diff <= 60: dealer_mb[dk]['mb60'] += 1
-                    if diff <= 90: dealer_mb[dk]['mb90'] += 1
-                    dealer_mb[dk]['mb_all'] += 1
-                    break
+    # Use pre-computed matchback (or empty default)
+    if dealer_mb is None:
+        dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
 
     # ── Header rows (0-2) ──
     ws.append(['Market', 'Dealer', 'Handovers', 'CVP', 'Wholesale', 'Gap',
@@ -788,7 +806,7 @@ def build_historical_sheet(ws, export_rows, mkt_map):
 # Lead Handling KPIs
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None):
+def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None):
     """Populate Lead Handling KPIs with matchback percentages.
 
     Processor reads rows 4+:
@@ -844,40 +862,9 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None):
         elif 'lost' in status:
             dk_data[dealer]['lost'] += 1
 
-    # Compute per-dealer matchback from Urban Science buyer names
-    dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'sales': 0})
-    if urban_science is not None and len(urban_science) > 0 and leads is not None and len(leads) > 0:
-        def _mb_frags(name):
-            n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
-            return set(n[i:i+4] for i in range(len(n)-3)) if len(n) >= 4 else set()
-
-        def _mb_norm(d):
-            d = str(d).replace(' INEOS Grenadier','').replace(' INEOS','').strip().upper()
-            return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
-
-        # Index leads by dealer
-        dealer_lead_index = defaultdict(list)
-        for _, lr in leads.iterrows():
-            dk = _mb_norm(_safe_str(lr.get('retailer_name', '')))
-            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
-            cfrags = _mb_frags(lr.get('customer_name', ''))
-            if dk and ld and cfrags:
-                dealer_lead_index[dk].append((ld, cfrags))
-
-        for _, sr in urban_science.iterrows():
-            dk = _mb_norm(_safe_str(sr.get('dealer_name', '')))
-            sd = _safe_date(sr.get('sale_date', None))
-            bfrags = _mb_frags(sr.get('customer_last_name', ''))
-            if not dk or not sd or not bfrags:
-                continue
-            dealer_mb[dk]['sales'] += 1
-            for ld, lfrags in dealer_lead_index.get(dk, []):
-                diff = (sd - ld).days
-                if 0 <= diff <= 90 and (bfrags & lfrags):
-                    if diff <= 30: dealer_mb[dk]['mb30'] += 1
-                    if diff <= 60: dealer_mb[dk]['mb60'] += 1
-                    dealer_mb[dk]['mb90'] += 1
-                    break
+    # Use pre-computed matchback (or empty default)
+    if dealer_mb is None:
+        dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'sales': 0})
 
     # Write data rows (row 4+) and accumulate network total
     net = {k: 0 for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost',
@@ -954,7 +941,7 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None):
 # Santander sheets
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_matchback_sheet(ws, export_rows, leads, urban_science=None):
+def build_matchback_sheet(ws, export_rows, leads, urban_science=None, dealer_mb=None):
     """Populate Matchback Report using Urban Science buyer names + C4C lead names.
 
     Matching logic (replicates Master File):

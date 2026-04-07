@@ -27,9 +27,10 @@ def assemble_master_xlsx(cache_dir, template_path=None):
     Returns: path to temporary xlsx file
     """
     from data_hub.sheet_builders import (
-        _parse_export_rows, build_retail_sales_sheet, build_dpd_sheet,
+        _parse_export_rows, compute_matchback, build_retail_sales_sheet, build_dpd_sheet,
         build_inventory_sheet, build_objectives_sheet, build_historical_sheet,
-        build_lead_kpis_sheet, build_santander_sheets, build_ga4_sheet_formatted,
+        build_lead_kpis_sheet, build_matchback_sheet, build_santander_sheets,
+        build_ga4_sheet_formatted,
     )
 
     def load(name):
@@ -76,6 +77,9 @@ def assemble_master_xlsx(cache_dir, template_path=None):
     export_rows, mkt_map = _parse_export_rows(sap, handover, sales_order, campaign_codes, template_path)
     print(f"  Parsed {len(export_rows)} export rows, {len(mkt_map)} dealers mapped")
 
+    # Compute matchback ONCE (expensive: 22K leads × 13K sales)
+    dealer_mb = compute_matchback(leads, urban_science)
+
     # Create temporary xlsx
     tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
     tmp.close()
@@ -110,7 +114,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Dealer Performance Dashboard ═══
     ws_dpd = wb.create_sheet("Dealer Performance Dashboard")
-    build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads, urban_science)
+    build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads, urban_science, dealer_mb)
     print("  Dealer Performance Dashboard: populated from export data")
 
     # ═══ SHEET: Dealer Inventory Report ═══
@@ -133,14 +137,14 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Lead Handling KPIs ═══
     ws_lk = wb.create_sheet("Lead Handling KPIs")
-    build_lead_kpis_sheet(ws_lk, leads, mkt_map, urban_science)
+    build_lead_kpis_sheet(ws_lk, leads, mkt_map, urban_science, dealer_mb)
     print(f"  Lead Handling KPIs: {'populated' if leads is not None else 'empty'}")
 
     # ═══ SHEET: Matchback Report ═══
     ws_mb = wb.create_sheet("Matchback Report")
     try:
         from data_hub.sheet_builders import build_matchback_sheet
-        build_matchback_sheet(ws_mb, export_rows, leads, urban_science)
+        build_matchback_sheet(ws_mb, export_rows, leads, urban_science, dealer_mb)
     except Exception as e:
         print(f"  Matchback Report ERROR: {e}")
         import traceback; traceback.print_exc()
