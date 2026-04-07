@@ -51,7 +51,11 @@ class _SheetAdapter:
         if self._ws is None:
             return
         for row in self._ws.iter_rows():
-            yield [_Cell(cell.value) for cell in row]
+            # CRITICAL: pyxlsb always returns floats for numeric cells.
+            # openpyxl returns ints for whole numbers (46082 instead of 46082.0).
+            # The processor uses isinstance(value, float) checks which fail
+            # on ints, causing it to skip data. Convert ints to floats here.
+            yield [_Cell(float(c.value) if isinstance(c.value, int) and not isinstance(c.value, bool) else c.value) for c in row]
 
 
 class _EmptySheet:
