@@ -131,6 +131,24 @@ def dashboard_status():
 
     return result
 
+def _inject_margaret_key(html: str) -> str:
+    """Inject the Anthropic API key for the Margaret in-dashboard chat assistant.
+
+    The dashboard JS reads window.__MARGARET_KEY and calls the Anthropic API
+    directly from the browser (with the anthropic-dangerous-direct-browser-access
+    header). The key is held in the MARGARET_API_KEY env var on Render so it
+    never lives in the repo. Without this injection Margaret returns 401.
+    """
+    margaret_key = os.environ.get("MARGARET_API_KEY", "").strip()
+    if not margaret_key:
+        return html
+    # Escape any quote/backslash so we can safely embed inside a JS string literal
+    safe_key = margaret_key.replace("\\", "\\\\").replace('"', '\\"')
+    snippet = f'<head><script>window.__MARGARET_KEY="{safe_key}";</script>'
+    if "<head>" in html:
+        return html.replace("<head>", snippet, 1)
+    return html
+
 # Serve generated Dashboard HTML — MUST be before static mount
 @app.get("/dashboard", response_class=HTMLResponse)
 async def serve_dashboard():
@@ -138,12 +156,12 @@ async def serve_dashboard():
     dash_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs', 'Americas_Daily_Dashboard.html')
     if os.path.exists(dash_path):
         with open(dash_path, 'r', encoding='utf-8') as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(content=_inject_margaret_key(f.read()))
     # Fallback: try serving the template directly
     tmpl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'dashboard_template.html')
     if os.path.exists(tmpl_path):
         with open(tmpl_path, 'r', encoding='utf-8') as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(content=_inject_margaret_key(f.read()))
     return HTMLResponse(content="""<!DOCTYPE html><html><head>
     <link rel="stylesheet" href="/ids.css">
     <style>body{font-family:var(--ids-font-body);display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--ids-surface-page)}</style>
