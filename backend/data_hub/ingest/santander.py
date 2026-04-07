@@ -79,41 +79,45 @@ def ingest_santander(filepath, product_override=None):
 def _parse_pivot_sheet(filepath, sheet_name):
     """Parse a Santander pivot sheet.
 
-    Layout:
-    - Column groups: Applications (cols 2-9), Mix (10-17), Apps WoW (18-25),
-      WoW % (26-33), Apps MoM (34-41), MoM % (42-49), Total Applications (50)
-    - Row 15: "Row Labels" + sub-column numbers
-    - Rows 16+: monthly rows (date labels) + daily rows (day numbers 1-31)
+    The total column shifts based on the Product filter:
+    - Product=(All)    → col AY (50) = Total Applications
+    - Product=Retail   → col AS (44) = Total Applications
+    - Product=Lease    → col AM (38) = Total Applications
 
-    For filtered files (Product=Retail/Lease), col 50 may be empty.
-    Fallback: sum the "Applications" group cols 2-9.
+    This is because filtering collapses/shifts columns in the pivot layout.
     """
     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None, engine='openpyxl', dtype=str)
 
-    def _read_count(row_idx):
-        """Get count for a row. Try col 50 (Total Applications) first,
-        then sum cols 2-9 (Applications group) as fallback."""
-        # Try col 50 (AY = Total Applications)
-        if len(df.columns) > 50:
-            try:
-                val = str(df.iloc[row_idx, 50]).strip()
-                if val and val not in ('nan', 'None', ''):
-                    c = int(float(val))
-                    if c > 0:
-                        return c
-            except (ValueError, TypeError):
-                pass
+    # Detect product filter from row 9 to determine which column to read
+    product = '(All)'
+    for i in range(len(df)):
+        v1 = str(df.iloc[i, 1]).strip() if pd.notna(df.iloc[i, 1]) else ''
+        if v1 == 'Product':
+            v2 = str(df.iloc[i, 2]).strip() if pd.notna(df.iloc[i, 2]) else ''
+            if v2:
+                product = v2
+            break
 
-        # Fallback: sum cols 2-9 (Applications sub-columns)
-        total = 0
-        for col in range(2, min(10, len(df.columns))):
+    # Map product → total column (0-indexed)
+    # Excel: A=0, ..., AM=38, AS=44, AY=50
+    TOTAL_COL_MAP = {
+        '(All)': 50,
+        'Retail': 44,
+        'Lease': 38,
+    }
+    total_col = TOTAL_COL_MAP.get(product, 50)
+    print(f"  Santander pivot product={product}, total_col={total_col}")
+
+    def _read_count(row_idx):
+        """Get count from the product-specific total column."""
+        if len(df.columns) > total_col:
             try:
-                val = str(df.iloc[row_idx, col]).strip()
+                val = str(df.iloc[row_idx, total_col]).strip()
                 if val and val not in ('nan', 'None', ''):
-                    total += int(float(val))
+                    return int(float(val))
             except (ValueError, TypeError):
                 pass
-        return total
+        return 0
 
     # Find data start (row after "Row Labels")
     data_start = None
