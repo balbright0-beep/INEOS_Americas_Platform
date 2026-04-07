@@ -1112,7 +1112,26 @@ def build_santander_sheets(wb, cache_dir):
                         ws.append([float(serial), int(vol)])
 
     if daily:
-        print(f"  Santander Daily: {len(daily)} days → MoM/Finance/Lease sheets")
+        print(f"  Santander Daily: {len(daily)} days -> MoM/Finance/Lease sheets")
+
+    # VERIFY: read back what we actually wrote to each sheet
+    for sn in ['App Report MoM', 'App Report Finance', 'App Report Lease']:
+        if sn in wb.sheetnames:
+            ws = wb[sn]
+            data_rows = 0
+            sample = None
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i == 0:
+                    continue
+                if row and row[0] is not None:
+                    try:
+                        if float(row[0]) >= 40000:
+                            data_rows += 1
+                            if sample is None:
+                                sample = (row[0], row[1])
+                    except (ValueError, TypeError):
+                        pass
+            print(f"  [Verify] {sn}: {ws.max_row} total rows, {data_rows} valid data rows, sample: {sample}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
