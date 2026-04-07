@@ -180,6 +180,70 @@ def run_processor_on_xlsx(xlsx_path, template_path, output_path):
     }
 
 
+def _post_process_html(output_path, cache_dir):
+    """Post-process the generated HTML to inject constants the processor doesn't compute.
+
+    This handles Lead Quality and any other dashboard sections that require
+    compute from source data but aren't part of the original processor.
+    """
+    import json
+    import re
+    import pandas as pd
+
+    if not os.path.exists(output_path):
+        return
+
+    # Load leads data
+    leads_path = os.path.join(cache_dir, 'data', 'leads.parquet')
+    if not os.path.exists(leads_path):
+        leads_path = os.path.join(cache_dir, 'data', 'c4c_leads.parquet')
+    if not os.path.exists(leads_path):
+        print("  [PostProcess] No leads data, skipping LQ")
+        return
+
+    leads = pd.read_parquet(leads_path)
+
+    # Load SAP for export_rows (market mapping)
+    sap_path = os.path.join(cache_dir, 'data', 'sap_export.parquet')
+    sap = pd.read_parquet(sap_path) if os.path.exists(sap_path) else None
+    if sap is None:
+        return
+
+    handover_path = os.path.join(cache_dir, 'data', 'sap_handover.parquet')
+    if not os.path.exists(handover_path):
+        handover_path = os.path.join(cache_dir, 'data', 'handover.parquet')
+    handover = pd.read_parquet(handover_path) if os.path.exists(handover_path) else None
+
+    # Parse export rows
+    from data_hub.sheet_builders import _parse_export_rows, compute_lead_quality
+    template_path = os.path.join(os.path.dirname(os.path.dirname(output_path)), 'templates', 'dashboard_template.html')
+    export_rows, _ = _parse_export_rows(sap, handover, None, None, template_path)
+
+    # Compute LQ data
+    lq_data = compute_lead_quality(leads, export_rows)
+
+    # Read HTML
+    with open(output_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+
+    # Replace constants using the same pattern as the processor
+    def replace_const(html, name, data):
+        pattern = rf"(const {name}=).*?;"
+        replacement = f"const {name}={json.dumps(data, separators=(',', ':'))};"
+        new_html, count = re.subn(pattern, replacement.replace("\\", "\\\\"), html, count=1, flags=re.DOTALL)
+        if count > 0:
+            print(f"  [PostProcess] {name}: replaced ({len(replacement)} chars)")
+            return new_html
+        return html
+
+    html = replace_const(html, "LQ_PERIODS", lq_data['LQ_PERIODS'])
+    html = replace_const(html, "LQ_MO", lq_data['LQ_MO'])
+    html = replace_const(html, "LQ_REP_MO", lq_data['LQ_REP_MO'])
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+
 def _load_processor_module(processor_path):
     """Load the processor as a Python module, handling import substitutions.
 
@@ -274,6 +338,13 @@ def generate_dashboard_from_sources(cache_dir, template_path, output_path):
         vehicle_count = 0
         if os.path.exists(sap_path):
             vehicle_count = len(pd.read_parquet(sap_path))
+
+        # Step 3: Post-process HTML to inject additional constants
+        # (Lead Quality, etc. that the processor doesn't compute)
+        try:
+            _post_process_html(output_path, cache_dir)
+        except Exception as e:
+            print(f"  Post-process warning: {e}")
 
         result['vehicle_count'] = vehicle_count
         print(f"\n[Bridge] Complete! {vehicle_count} vehicles processed.")

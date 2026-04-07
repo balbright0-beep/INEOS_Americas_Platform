@@ -1176,6 +1176,210 @@ def build_santander_sheets(wb, cache_dir):
 # GA4 Sheets
 # ═══════════════════════════════════════════════════════════════════════
 
+def compute_lead_quality(leads, export_rows, template_path=None):
+    """Compute Lead Quality metrics from leads data.
+
+    Returns a dict with LQ_PERIODS and LQ_MO data for the Lead Quality page.
+
+    Metrics per period (R90/R120/R180/R365/ALL):
+    - t = total leads
+    - rep = repeat rate (same customer within period)
+    - nph = % missing phone
+    - smr = same-month repeat %
+    - li = low intent % (no test drive requested)
+    - bd = bad/duplicate count
+    - bc = bad contact info %
+    """
+    if leads is None or len(leads) == 0:
+        return {'LQ_PERIODS': {}, 'LQ_MO': [], 'LQ_REP_MO': {}}
+
+    today = datetime.now()
+    periods = [
+        ('R90', today - timedelta(days=90)),
+        ('R120', today - timedelta(days=120)),
+        ('R180', today - timedelta(days=180)),
+        ('R365', today - timedelta(days=365)),
+        ('ALL', datetime(2020, 1, 1)),
+    ]
+
+    # Build dealer→market map for the retailers section
+    dealer_market = {}
+    for r in export_rows:
+        dk = r['dealer_upper']
+        if dk not in dealer_market and r.get('market'):
+            dealer_market[dk] = r['market']
+
+    # Prepare leads with dates
+    leads_list = []
+    for _, lr in leads.iterrows():
+        ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+        if not ld:
+            continue
+        customer = _safe_str(lr.get('customer_name', ''))
+        phone = _safe_str(lr.get('customer_phone', lr.get('customer_mobile', '')))
+        email = _safe_str(lr.get('customer_email', ''))
+        retailer = _safe_str(lr.get('retailer_name', ''))
+        retailer_upper = retailer.replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
+        retailer_upper = ' '.join(w for w in retailer_upper.split() if w != 'GRENADIER').strip()
+        td_req = _safe_date(lr.get('td_requested', None))
+        td_book = _safe_date(lr.get('td_booking_date', None))
+        leads_list.append({
+            'date': ld, 'customer': customer.strip().lower(), 'phone': phone,
+            'email': email.strip().lower(), 'retailer': retailer_upper,
+            'has_td': bool(td_req or td_book),
+        })
+
+    def _period_stats(cutoff_date):
+        filtered = [l for l in leads_list if l['date'] >= cutoff_date]
+        total = len(filtered)
+        if total == 0:
+            return {'t': 0, 'rep': 0, 'nph': 0, 'smr': 0, 'li': 0, 'bd': 0, 'bc': 0}
+
+        # Count repeats (same phone or email appearing multiple times)
+        phone_counts = defaultdict(int)
+        email_counts = defaultdict(int)
+        for l in filtered:
+            if l['phone']:
+                phone_counts[l['phone']] += 1
+            if l['email']:
+                email_counts[l['email']] += 1
+        repeats = sum(1 for l in filtered if (l['phone'] and phone_counts[l['phone']] > 1) or (l['email'] and email_counts[l['email']] > 1))
+
+        # Missing phone
+        no_phone = sum(1 for l in filtered if not l['phone'] or len(l['phone']) < 7)
+
+        # Same-month repeat (same customer, same month)
+        seen_month = defaultdict(set)
+        smr_count = 0
+        for l in filtered:
+            key = l['phone'] or l['email']
+            if key:
+                mo_key = l['date'].strftime('%Y-%m')
+                if key in seen_month[mo_key]:
+                    smr_count += 1
+                seen_month[mo_key].add(key)
+
+        # Low intent (no TD request)
+        low_intent = sum(1 for l in filtered if not l['has_td'])
+
+        # Bad/duplicate (obvious test names)
+        bad_patterns = ['test', 'asdf', 'xxx', 'fake', 'duplicate']
+        bad = sum(1 for l in filtered if any(p in l['customer'] for p in bad_patterns))
+
+        # Bad contact info (no phone AND no email)
+        bad_contact = sum(1 for l in filtered if not l['phone'] and not l['email'])
+
+        return {
+            't': total,
+            'rep': round(repeats / total * 100, 1),
+            'nph': round(no_phone / total * 100, 1),
+            'smr': round(smr_count / total * 100, 1),
+            'li': round(low_intent / total * 100, 1),
+            'bd': bad,
+            'bc': round(bad_contact / total * 100, 1),
+        }
+
+    def _retailer_stats(cutoff_date):
+        filtered = [l for l in leads_list if l['date'] >= cutoff_date]
+        # Group by retailer
+        by_retailer = defaultdict(list)
+        for l in filtered:
+            if l['retailer']:
+                by_retailer[l['retailer']].append(l)
+
+        result = []
+        for retailer, rls in by_retailer.items():
+            if len(rls) < 20:
+                continue
+            total = len(rls)
+            phone_counts = defaultdict(int)
+            email_counts = defaultdict(int)
+            for l in rls:
+                if l['phone']:
+                    phone_counts[l['phone']] += 1
+                if l['email']:
+                    email_counts[l['email']] += 1
+            repeats = sum(1 for l in rls if (l['phone'] and phone_counts[l['phone']] > 1) or (l['email'] and email_counts[l['email']] > 1))
+            no_phone = sum(1 for l in rls if not l['phone'] or len(l['phone']) < 7)
+
+            seen_month = defaultdict(set)
+            smr = 0
+            for l in rls:
+                key = l['phone'] or l['email']
+                if key:
+                    mo_key = l['date'].strftime('%Y-%m')
+                    if key in seen_month[mo_key]:
+                        smr += 1
+                    seen_month[mo_key].add(key)
+
+            low_intent = sum(1 for l in rls if not l['has_td'])
+            bad_patterns = ['test', 'asdf', 'xxx', 'fake']
+            bad = sum(1 for l in rls if any(p in l['customer'] for p in bad_patterns))
+            bad_contact = sum(1 for l in rls if not l['phone'] and not l['email'])
+
+            rep_pct = round(repeats / total * 100, 1)
+            nph_pct = round(no_phone / total * 100, 1)
+            smr_pct = round(smr / total * 100, 1)
+            li_pct = round(low_intent / total * 100, 1)
+            bc_pct = round(bad_contact / total * 100, 1)
+
+            score = max(0, round(100 - (rep_pct * 0.25) - (nph_pct * 0.20) - (smr_pct * 0.20)
+                                    - (li_pct * 0.15) - (bad / total * 10) - (bc_pct * 0.10)))
+
+            result.append({
+                'd': retailer.title(), 'r': dealer_market.get(retailer, 'Unknown'),
+                't': total, 'rep': rep_pct, 'nph': nph_pct, 'smr': smr_pct,
+                'li': li_pct, 'bd': bad, 'bc': bc_pct, 'sc': score,
+            })
+        return result
+
+    lq_periods = {}
+    for key, cutoff in periods:
+        lq_periods[key] = {
+            'net': _period_stats(cutoff),
+            'ret': _retailer_stats(cutoff),
+        }
+
+    # Monthly trend data
+    from collections import OrderedDict
+    mo_buckets = OrderedDict()
+    for l in leads_list:
+        mo = l['date'].strftime('%Y-%m')
+        if mo not in mo_buckets:
+            mo_buckets[mo] = []
+        mo_buckets[mo].append(l)
+
+    lq_mo = []
+    for mo in sorted(mo_buckets.keys()):
+        rls = mo_buckets[mo]
+        total = len(rls)
+        if total == 0:
+            continue
+        phone_counts = defaultdict(int)
+        for l in rls:
+            if l['phone']:
+                phone_counts[l['phone']] += 1
+        repeats = sum(1 for l in rls if l['phone'] and phone_counts[l['phone']] > 1)
+        no_phone = sum(1 for l in rls if not l['phone'])
+        low_intent = sum(1 for l in rls if not l['has_td'])
+        bad_contact = sum(1 for l in rls if not l['phone'] and not l['email'])
+
+        lq_mo.append({
+            'm': mo,
+            'rep': round(repeats / total * 100, 1),
+            'nph': round(no_phone / total * 100, 1),
+            'smr': 0,  # Simplified
+            'li': round(low_intent / total * 100, 1),
+            'bc': round(bad_contact / total * 100, 1),
+        })
+
+    return {
+        'LQ_PERIODS': lq_periods,
+        'LQ_MO': lq_mo,
+        'LQ_REP_MO': {},  # Placeholder
+    }
+
+
 def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
     """Write GA4 data in processor-expected format.
 
