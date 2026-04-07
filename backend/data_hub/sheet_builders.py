@@ -487,7 +487,7 @@ def build_retail_sales_sheet(ws, export_rows, mkt_map, objectives=None, template
 # Dealer Performance Dashboard (DPD)
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_dpd_sheet(ws, export_rows, mkt_map, leads=None):
+def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None):
     """Populate DPD sheet — exactly 27 columns per dealer row.
 
     Processor reads rows 3+:
@@ -553,6 +553,41 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None):
                 if r['is_cvp']:
                     stats[dk]['cvp'] += 1
 
+    # Compute per-dealer matchback (same logic as LK sheet)
+    dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
+    if urban_science is not None and len(urban_science) > 0 and leads is not None and len(leads) > 0:
+        def _dpd_frags(name):
+            n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
+            return set(n[i:i+4] for i in range(len(n)-3)) if len(n) >= 4 else set()
+
+        def _dpd_norm(d):
+            d = str(d).replace(' INEOS Grenadier','').replace(' INEOS','').strip().upper()
+            return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
+
+        dlr_lead_idx = defaultdict(list)
+        for _, lr in leads.iterrows():
+            dk = _dpd_norm(_safe_str(lr.get('retailer_name', '')))
+            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+            cf = _dpd_frags(lr.get('customer_name', ''))
+            if dk and ld and cf:
+                dlr_lead_idx[dk].append((ld, cf))
+
+        for _, sr in urban_science.iterrows():
+            dk = _dpd_norm(_safe_str(sr.get('dealer_name', '')))
+            sd = _safe_date(sr.get('sale_date', None))
+            bf = _dpd_frags(sr.get('customer_last_name', ''))
+            if not dk or not sd or not bf:
+                continue
+            dealer_mb[dk]['sales'] += 1
+            for ld, lf in dlr_lead_idx.get(dk, []):
+                diff = (sd - ld).days
+                if 0 <= diff <= 365 and (bf & lf):
+                    if diff <= 30: dealer_mb[dk]['mb30'] += 1
+                    if diff <= 60: dealer_mb[dk]['mb60'] += 1
+                    if diff <= 90: dealer_mb[dk]['mb90'] += 1
+                    dealer_mb[dk]['mb_all'] += 1
+                    break
+
     # ── Header rows (0-2) ──
     ws.append(['Market', 'Dealer', 'Handovers', 'CVP', 'Wholesale', 'Gap',
                'On Ground', 'DollarSales', 'DollarCount'] +
@@ -601,11 +636,13 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None):
             row[20] = ld['td_booked']
             row[21] = ld['td_completed']
             row[22] = round(ld['td_completed'] / ld['td_booked'], 3) if ld['td_booked'] > 0 else 0
-            # Matchback percentages (we don't have this data)
-            row[23] = 0  # MB30
-            row[24] = 0  # MB60
-            row[25] = 0  # MB90
-            row[26] = 0  # MB all-time
+            # Matchback percentages from Urban Science + leads matching
+            mb = dealer_mb.get(dk, {'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0, 'sales': 0})
+            ms = mb['sales'] or 1
+            row[23] = round(mb['mb30'] / ms, 3)   # MB30% (decimal, processor * 100)
+            row[24] = round(mb['mb60'] / ms, 3)   # MB60%
+            row[25] = round(mb['mb90'] / ms, 3)   # MB90%
+            row[26] = round(mb['mb_all'] / ms, 3) # MB all-time%
             ws.append(row)
 
 

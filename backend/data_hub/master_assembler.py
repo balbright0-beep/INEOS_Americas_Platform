@@ -110,7 +110,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Dealer Performance Dashboard ═══
     ws_dpd = wb.create_sheet("Dealer Performance Dashboard")
-    build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads)
+    build_dpd_sheet(ws_dpd, export_rows, mkt_map, leads, urban_science)
     print("  Dealer Performance Dashboard: populated from export data")
 
     # ═══ SHEET: Dealer Inventory Report ═══
