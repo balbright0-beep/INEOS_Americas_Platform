@@ -15,9 +15,37 @@ from app.seed import seed_database
 from app.routers import auth, admin, bulletins, links, data
 
 
+def _migrate_mfa_columns():
+    """
+    Idempotent ALTER TABLE for MFA columns. Runs on every startup.
+    Works for both SQLite and PostgreSQL. Safe to run repeatedly.
+    """
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return  # create_all() will handle it
+    existing = {c["name"] for c in inspector.get_columns("users")}
+    needed = {
+        "email":            "VARCHAR",
+        "mfa_enabled":      "BOOLEAN DEFAULT FALSE",
+        "mfa_code_hash":    "VARCHAR",
+        "mfa_code_expires": "TIMESTAMP",
+        "mfa_attempts":     "INTEGER DEFAULT 0",
+    }
+    with engine.begin() as conn:
+        for col, ddl in needed.items():
+            if col not in existing:
+                try:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
+                    print(f"[migrate] Added users.{col}")
+                except Exception as e:
+                    print(f"[migrate] Could not add users.{col}: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _migrate_mfa_columns()
     db = SessionLocal()
     try:
         seed_database(db)
