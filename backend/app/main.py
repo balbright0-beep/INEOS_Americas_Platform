@@ -92,13 +92,18 @@ def dashboard_status():
             try:
                 with open(fpath) as f:
                     data = _json.load(f)
+                monthly = data.get('monthly', {})
+                daily = data.get('daily', {})
                 sant_info[fname] = {
                     'size': os.path.getsize(fpath),
                     'keys': list(data.keys()),
-                    'monthly_count': len(data.get('monthly', {})),
-                    'daily_count': len(data.get('daily', {})),
-                    'monthly_last': list(data.get('monthly', {}).keys())[-3:] if data.get('monthly') else [],
-                    'daily_last': list(sorted(data.get('daily', {}).keys()))[-3:] if data.get('daily') else [],
+                    'product': data.get('product', '?'),
+                    'monthly_count': len(monthly),
+                    'monthly_total': sum(int(v) for v in monthly.values() if isinstance(v, (int, float))),
+                    'monthly_sample': dict(list(monthly.items())[-3:]) if monthly else {},
+                    'daily_count': len(daily),
+                    'daily_total': sum(int(v) for v in daily.values() if isinstance(v, (int, float))),
+                    'daily_sample': dict(list(sorted(daily.items()))[-5:]) if daily else {},
                 }
             except Exception as e:
                 sant_info[fname] = {'error': str(e)}
