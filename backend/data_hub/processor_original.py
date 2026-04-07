@@ -1726,13 +1726,29 @@ def build_RSR_RETAILED(export_rows, market_map):
 # Customer Experience Scorecard (CX) — Google, Yelp, DealerRater, Cars.com
 # ---------------------------------------------------------------------------
 
-CX_CACHE_PATH = os.path.join(DEFAULT_BASE_DIR, "cx_cache.json")
-CX_CACHE_TTL_HOURS = 24
+def _cx_cache_path():
+    """Return the CX cache file path. Looks first at the bundled repo
+    cache (data_hub/cx_cache.json) which always exists in the deploy,
+    then falls back to the legacy Windows path for local dev.
+    """
+    bundled = os.path.join(os.path.dirname(__file__), "cx_cache.json")
+    if os.path.exists(bundled):
+        return bundled
+    return os.path.join(DEFAULT_BASE_DIR, "cx_cache.json")
+
+CX_CACHE_PATH = _cx_cache_path()
+# TTL is intentionally generous: the bundled cache is committed in the repo
+# and acts as a "last known good" snapshot when the live fetch (Google
+# Places / Yelp) has no API key or no Dealer Address sheet to work from.
+# Without this, build_CX would return [] and overwrite CX_DATA on every
+# refresh, leaving the scorecard blank.
+CX_CACHE_TTL_HOURS = 24 * 365 * 5
 
 def _cx_load_cache():
-    if os.path.exists(CX_CACHE_PATH):
+    path = _cx_cache_path()
+    if os.path.exists(path):
         try:
-            with open(CX_CACHE_PATH, "r") as f:
+            with open(path, "r") as f:
                 cache = json.load(f)
             ts = cache.get("_ts", 0)
             from datetime import datetime as _dt
