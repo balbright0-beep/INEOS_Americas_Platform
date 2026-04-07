@@ -1127,15 +1127,19 @@ def build_santander_sheets(wb, cache_dir):
     - "App Report Finance" rows 1+: col[0]=date serial, col[1]=daily finance
     - "App Report Lease" rows 1+: col[0]=date serial, col[1]=daily lease
     """
-    # Try multiple JSON locations
+    # Try multiple JSON locations — prefer data/ (from upload) over root (from old restore)
     sant_data = None
-    for fname in ['santander_latest.json', 'data/santander.json']:
+    for fname in ['data/santander.json', 'data/santander_finance.json', 'data/santander_lease.json', 'santander_latest.json']:
         spath = os.path.join(cache_dir, fname)
         if os.path.exists(spath):
             try:
                 with open(spath) as f:
-                    sant_data = json.load(f)
-                break
+                    candidate = json.load(f)
+                # Use the one with the most data (newest upload has more)
+                if sant_data is None or len(json.dumps(candidate)) > len(json.dumps(sant_data)):
+                    if 'monthly' in candidate or 'daily' in candidate:
+                        sant_data = candidate
+                        print(f"  Santander data from {fname}: {len(candidate.get('monthly',{}))} months, {len(candidate.get('daily',{}))} days")
             except Exception:
                 continue
 

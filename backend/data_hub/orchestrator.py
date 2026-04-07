@@ -163,12 +163,19 @@ class DataHub:
                         continue
 
                     if key in ('_santander_json', 'santander'):
+                        # Write to both locations
                         sant_path = os.path.join(self.cache_dir, 'santander_latest.json')
-                        with open(sant_path, 'wb') as f:
-                            f.write(cf.data)
-                        with open(os.path.join(data_dir, 'santander.json'), 'wb') as f:
-                            f.write(cf.data)
-                        print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
+                        sant_data_path = os.path.join(data_dir, 'santander.json')
+                        # Only write if this is NEWER/LARGER than what's already there
+                        existing_size = os.path.getsize(sant_data_path) if os.path.exists(sant_data_path) else 0
+                        if len(cf.data) >= existing_size:
+                            with open(sant_path, 'wb') as f:
+                                f.write(cf.data)
+                            with open(sant_data_path, 'wb') as f:
+                                f.write(cf.data)
+                            print(f"  Restored santander from DB ({len(cf.data):,} bytes)")
+                        else:
+                            print(f"  Skipped stale santander DB entry ({len(cf.data)} bytes < {existing_size} on disk)")
                         count += 1
                         continue
 
