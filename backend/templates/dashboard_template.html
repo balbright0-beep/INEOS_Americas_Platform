@@ -4798,10 +4798,10 @@ dtbl+=`</tbody></table>`;
 document.getElementById("execDealerWrap").innerHTML=dtbl;
 
 // === SANTANDER FULL WIDTH (all available data) ===
-const sanAll=SAN_ALL.slice(0,SAN_TODAY);
-const sanFin=SAN_FIN.slice(0,SAN_TODAY);
-const sanLea=SAN_LEASE.slice(0,SAN_TODAY);
-const sanDays=SAN_DAYS.slice(0,SAN_TODAY);
+const sanAll=SAN_ALL.slice(0,SAN_TODAY+1);
+const sanFin=SAN_FIN.slice(0,SAN_TODAY+1);
+const sanLea=SAN_LEASE.slice(0,SAN_TODAY+1);
+const sanDays=SAN_DAYS.slice(0,SAN_TODAY+1);
 const sanLabels=sanDays.map((d,i)=>{const dt=new Date(d+"T00:00:00");const day=dt.getDate();const mon=dt.toLocaleDateString("en-US",{month:"short"});return day===1||i===0?mon+" "+day:i%5===0?day+"":""});
 const sanAvg=roll7San(sanAll);
 const sanMax=Math.max(...sanAll)*1.2||10;
@@ -7117,8 +7117,8 @@ const l30=TDD.ALL[0].slice(Math.max(0,t-30),t).reduce((s,v)=>s+v,0)+TDD.ALL[1].s
 const td30=TDD.ALL[2].slice(Math.max(0,t-30),t).reduce((s,v)=>s+v,0)+TDD.ALL[3].slice(Math.max(0,t-30),t).reduce((s,v)=>s+v,0);
 ctx.push(`R30 Brand Leads: ${l30} total (${(l30/30).toFixed(1)}/day, target: 63/day)`);
 ctx.push(`R30 TD Bookings: ${td30} total (${(td30/30).toFixed(1)}/day, target: 42/day)`);
-const sanMTD=SAN_ALL.slice(0,SAN_TODAY).reduce((s,v)=>s+v,0);
-ctx.push(`Santander Apps MTD: ${sanMTD} (${(sanMTD/SAN_TODAY).toFixed(1)}/day avg)`);
+const sanMTD=SAN_ALL.slice(0,SAN_TODAY+1).reduce((s,v)=>s+v,0);
+ctx.push(`Santander Apps MTD: ${sanMTD} (${(sanMTD/(SAN_TODAY+1)).toFixed(1)}/day avg)`);
 });
 
 // ── RETAIL SALES BY REGION ──
@@ -7258,11 +7258,11 @@ ctx.push(`  ${m} R30: Leads=${ml} (${(ml/30).toFixed(1)}/day), TDs=${mt} (${(mt/
 // ── SANTANDER FINANCE ──
 _s(()=>{
 ctx.push(`\n=== SANTANDER FINANCE ===`);
-const mtdApps=SAN_ALL.slice(0,SAN_TODAY).reduce((s,v)=>s+v,0);
-const mtdFin=SAN_FIN.slice(0,SAN_TODAY).reduce((s,v)=>s+v,0);
-const mtdLease=SAN_LEASE.slice(0,SAN_TODAY).reduce((s,v)=>s+v,0);
-ctx.push(`MTD: ${mtdApps} apps (Finance: ${mtdFin}, Lease: ${mtdLease}). Avg/day: ${(mtdApps/SAN_TODAY).toFixed(1)}`);
-const recent7=SAN_ALL.slice(Math.max(0,SAN_TODAY-7),SAN_TODAY);
+const mtdApps=SAN_ALL.slice(0,SAN_TODAY+1).reduce((s,v)=>s+v,0);
+const mtdFin=SAN_FIN.slice(0,SAN_TODAY+1).reduce((s,v)=>s+v,0);
+const mtdLease=SAN_LEASE.slice(0,SAN_TODAY+1).reduce((s,v)=>s+v,0);
+ctx.push(`MTD: ${mtdApps} apps (Finance: ${mtdFin}, Lease: ${mtdLease}). Avg/day: ${(mtdApps/(SAN_TODAY+1)).toFixed(1)}`);
+const recent7=SAN_ALL.slice(Math.max(0,SAN_TODAY-6),SAN_TODAY+1);
 ctx.push(`Last 7 days: [${recent7.join(",")}]`);
 ctx.push(`Monthly history: ${Object.entries(SAN_MO).map(([m,v])=>`${m}:${v}`).join(", ")}`);
 });
