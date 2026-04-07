@@ -77,6 +77,15 @@ def assemble_master_xlsx(cache_dir, template_path=None):
     export_rows, mkt_map = _parse_export_rows(sap, handover, sales_order, campaign_codes, template_path)
     print(f"  Parsed {len(export_rows)} export rows, {len(mkt_map)} dealers mapped")
 
+    # Diagnostic: count rows with rev_rec_date and compute avg DIS
+    rr_count = sum(1 for r in export_rows if r.get('rev_rec_date'))
+    dol_vals = [r.get('days_on_lot') for r in export_rows if r.get('days_on_lot') is not None]
+    if dol_vals:
+        avg_dol = sum(dol_vals) / len(dol_vals)
+        print(f"  [Diag] rev_rec_date present: {rr_count}/{len(export_rows)}, avg days on lot: {round(avg_dol, 1)} over {len(dol_vals)} sold vehicles")
+    else:
+        print(f"  [Diag] rev_rec_date present: {rr_count}/{len(export_rows)}, no sold+rev_rec pairs for avg DOL")
+
     # Compute matchback ONCE (expensive: 22K leads × 13K sales)
     dealer_mb = compute_matchback(leads, urban_science)
 
