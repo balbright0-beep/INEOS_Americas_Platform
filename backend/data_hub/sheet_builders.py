@@ -751,8 +751,8 @@ def build_historical_sheet(ws, export_rows, mkt_map):
 # Lead Handling KPIs
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_lead_kpis_sheet(ws, leads, mkt_map):
-    """Populate Lead Handling KPIs.
+def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None):
+    """Populate Lead Handling KPIs with matchback percentages.
 
     Processor reads rows 4+:
     [0]=market [1]=dealer [2]=RBM [3]=leads [4]=contacted [5]=contact%
@@ -807,8 +807,44 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
         elif 'lost' in status:
             dk_data[dealer]['lost'] += 1
 
+    # Compute per-dealer matchback from Urban Science buyer names
+    dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'sales': 0})
+    if urban_science is not None and len(urban_science) > 0 and leads is not None and len(leads) > 0:
+        def _mb_frags(name):
+            n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
+            return set(n[i:i+3] for i in range(len(n)-2)) if len(n) >= 3 else set()
+
+        def _mb_norm(d):
+            d = str(d).replace(' INEOS Grenadier','').replace(' INEOS','').strip().upper()
+            return ' '.join(w for w in d.split() if w != 'GRENADIER').strip()
+
+        # Index leads by dealer
+        dealer_lead_index = defaultdict(list)
+        for _, lr in leads.iterrows():
+            dk = _mb_norm(_safe_str(lr.get('retailer_name', '')))
+            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
+            cfrags = _mb_frags(lr.get('customer_name', ''))
+            if dk and ld and cfrags:
+                dealer_lead_index[dk].append((ld, cfrags))
+
+        for _, sr in urban_science.iterrows():
+            dk = _mb_norm(_safe_str(sr.get('dealer_name', '')))
+            sd = _safe_date(sr.get('sale_date', None))
+            bfrags = _mb_frags(sr.get('customer_last_name', ''))
+            if not dk or not sd or not bfrags:
+                continue
+            dealer_mb[dk]['sales'] += 1
+            for ld, lfrags in dealer_lead_index.get(dk, []):
+                diff = (sd - ld).days
+                if 0 <= diff <= 90 and (bfrags & lfrags):
+                    if diff <= 30: dealer_mb[dk]['mb30'] += 1
+                    if diff <= 60: dealer_mb[dk]['mb60'] += 1
+                    dealer_mb[dk]['mb90'] += 1
+                    break
+
     # Write data rows (row 4+) and accumulate network total
-    net = {k: 0 for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost')}
+    net = {k: 0 for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost',
+                           'mb30', 'mb60', 'mb90', 'mb_sales')}
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
 
     for region in region_order:
@@ -822,6 +858,8 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
             tc = kpi['td_completed']
             w = kpi['won']
             lo = kpi['lost']
+            mb = dealer_mb.get(dk, {'mb30': 0, 'mb60': 0, 'mb90': 0, 'sales': 0})
+            ms = mb['sales'] or 1
 
             row = [''] * 20
             row[0] = region
@@ -839,12 +877,20 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
             row[12] = w
             row[13] = lo
             row[14] = round(lo / n, 3) if n > 0 else 0
+            row[15] = round(mb['mb30'] / ms, 3)  # MB30%
+            row[16] = round(mb['mb60'] / ms, 3)  # MB60%
+            row[17] = round(mb['mb90'] / ms, 3)  # MB90%
             ws.append(row)
 
-            for k in net:
+            for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost'):
                 net[k] += kpi[k]
+            net['mb30'] += mb['mb30']
+            net['mb60'] += mb['mb60']
+            net['mb90'] += mb['mb90']
+            net['mb_sales'] += mb['sales']
 
     # Network total row
+    ms = net['mb_sales'] or 1
     row = [''] * 20
     row[0] = 'Network'
     row[1] = 'NETWORK TOTAL'
@@ -860,7 +906,11 @@ def build_lead_kpis_sheet(ws, leads, mkt_map):
     row[12] = net['won']
     row[13] = net['lost']
     row[14] = round(net['lost'] / net['leads'], 3) if net['leads'] > 0 else 0
+    row[15] = round(net['mb30'] / ms, 3)
+    row[16] = round(net['mb60'] / ms, 3)
+    row[17] = round(net['mb90'] / ms, 3)
     ws.append(row)
+    print(f"  LK MB: {net['mb30']}/{net['mb_sales']}={round(net['mb30']/ms*100,1)}% (30D), {round(net['mb90']/ms*100,1)}% (90D)")
 
 
 # ═══════════════════════════════════════════════════════════════════════

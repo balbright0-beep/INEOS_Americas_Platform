@@ -133,7 +133,7 @@ def assemble_master_xlsx(cache_dir, template_path=None):
 
     # ═══ SHEET: Lead Handling KPIs ═══
     ws_lk = wb.create_sheet("Lead Handling KPIs")
-    build_lead_kpis_sheet(ws_lk, leads, mkt_map)
+    build_lead_kpis_sheet(ws_lk, leads, mkt_map, urban_science)
     print(f"  Lead Handling KPIs: {'populated' if leads is not None else 'empty'}")
 
     # ═══ SHEET: Matchback Report ═══
