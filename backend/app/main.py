@@ -53,6 +53,13 @@ app.include_router(bulletins.router)
 app.include_router(links.router)
 app.include_router(data.router)
 
+# Lightweight health check for Render zero-downtime deploys
+# Returns 200 immediately with no DB or filesystem dependencies so the
+# load balancer can confirm the new container is up before cutting traffic.
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 # Public last-update endpoint (no auth required)
 @app.get("/api/last-update")
 def public_last_update(db: Session = Depends(get_db)):
