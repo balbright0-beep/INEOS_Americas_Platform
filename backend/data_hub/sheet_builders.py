@@ -812,7 +812,7 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None):
     if urban_science is not None and len(urban_science) > 0 and leads is not None and len(leads) > 0:
         def _mb_frags(name):
             n = str(name).strip().upper().split()[-1] if name and str(name).strip() else ''
-            return set(n[i:i+3] for i in range(len(n)-2)) if len(n) >= 3 else set()
+            return set(n[i:i+4] for i in range(len(n)-3)) if len(n) >= 4 else set()
 
         def _mb_norm(d):
             d = str(d).replace(' INEOS Grenadier','').replace(' INEOS','').strip().upper()
@@ -941,14 +941,14 @@ def build_matchback_sheet(ws, export_rows, leads, urban_science=None):
         for suffix in ('JR', 'SR', 'III', 'II', 'IV'):
             if last == suffix and len(parts) > 1:
                 last = parts[-2]
-        # Generate all 3-char substrings
+        # Generate 4-char substrings (reduces false positives vs 3-char)
         frags = set()
-        for i in range(len(last) - 2):
-            frags.add(last[i:i+3])
+        for i in range(len(last) - 3):
+            frags.add(last[i:i+4])
         return last, frags
 
     def _names_match(name1_frags, name2_frags):
-        """Check if any 3-char fragment is shared between two names."""
+        """Check if any 4-char fragment is shared between two names."""
         return bool(name1_frags & name2_frags)
 
     # Build per-dealer lead data: [(date, last_name, name_frags), ...]
