@@ -1441,38 +1441,109 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
     cols = list(ga4_df.columns)
 
     # ─── Engagement / Acquisition ─────────────────────────────────────────
+    # Both reports come pivoted (date × sessionDefaultChannelGroup) and need
+    # to be reshaped so each date becomes ONE row with 4 channel columns
+    # in the order the processor expects.
+    #   Engagement processor reads: col1=all, col2=org, col3=paid, col4=dir
+    #     (sessions/day average per channel)
+    #   Acquisition processor reads: col1=all, col2=dir, col3=org, col4=paid
+    #     (raw daily session totals)
     if ga4_type in ('ga4_engagement', 'ga4_acquisition'):
         start_date = datetime(2025, 1, 1)
-        date_col = None
-        for c in cols:
-            if 'date' in c.lower():
-                date_col = c
-                break
+        date_col = _find_col(cols, ['date'])
+        chan_col = _find_col(cols, ['sessionDefaultChannelGroup', 'channelGroup'])
+        sess_col = _find_col(cols, ['sessions'])
 
-        if date_col:
-            for _, r in ga4_df.iterrows():
-                try:
-                    dt = pd.to_datetime(r[date_col], errors='coerce')
-                    if pd.isna(dt):
-                        continue
-                    day_idx = (dt - start_date).days
-                    if day_idx < 0:
-                        continue
-                    metrics = []
-                    for c in cols:
-                        if c != date_col:
-                            try:
-                                metrics.append(float(r[c]) if not pd.isna(r[c]) else 0)
-                            except (ValueError, TypeError):
-                                metrics.append(0)
-                    while len(metrics) < 4:
-                        metrics.append(0)
-                    ws.append([day_idx] + metrics[:4])
-                except Exception:
-                    continue
+        if not date_col or not sess_col:
+            return
+
+        # Normalize date to datetime
+        df = ga4_df.copy()
+        df['_dt'] = pd.to_datetime(df[date_col], errors='coerce', format='%Y%m%d')
+        # Fallback for ISO format
+        mask = df['_dt'].isna()
+        if mask.any():
+            df.loc[mask, '_dt'] = pd.to_datetime(df.loc[mask, date_col], errors='coerce')
+        df = df.dropna(subset=['_dt'])
+        df = df[df['_dt'] >= start_date]
+        df = df[df['_dt'] <= pd.Timestamp(datetime.now().date())]
+
+        # Map GA4 channel labels into 4 buckets: org, paid, dir, other
+        def bucket(label):
+            if not isinstance(label, str):
+                return 'other'
+            l = label.lower()
+            if 'organic' in l:
+                return 'org'
+            if 'paid' in l or 'cpc' in l or 'display' in l or 'video' in l:
+                return 'paid'
+            if 'direct' in l:
+                return 'dir'
+            return 'other'
+
+        if chan_col:
+            df['_bucket'] = df[chan_col].apply(bucket)
         else:
-            for _, r in ga4_df.iterrows():
-                ws.append([r.get(c, '') for c in cols])
+            df['_bucket'] = 'other'
+
+        if ga4_type == 'ga4_engagement':
+            # Engagement uses sessions per day (one number per channel per day)
+            # Pivot: date × bucket → sessions
+            pivot = df.groupby(['_dt', '_bucket'])[sess_col].sum().unstack(fill_value=0)
+            for b in ['org', 'paid', 'dir', 'other']:
+                if b not in pivot.columns:
+                    pivot[b] = 0
+            pivot['all'] = pivot[['org', 'paid', 'dir', 'other']].sum(axis=1)
+
+            for dt, row in pivot.iterrows():
+                day_idx = (dt.date() - start_date.date()).days
+                if day_idx < 0:
+                    continue
+                ws.append([
+                    day_idx,
+                    float(row['all']),
+                    float(row['org']),
+                    float(row['paid']),
+                    float(row['dir']),
+                ])
+
+        else:  # ga4_acquisition
+            # Acquisition: write daily session totals + Default Channel Group section
+            pivot = df.groupby(['_dt', '_bucket'])[sess_col].sum().unstack(fill_value=0)
+            for b in ['org', 'paid', 'dir', 'other']:
+                if b not in pivot.columns:
+                    pivot[b] = 0
+            pivot['all'] = pivot[['org', 'paid', 'dir', 'other']].sum(axis=1)
+
+            row_count = 0
+            for dt, row in pivot.iterrows():
+                day_idx = (dt.date() - start_date.date()).days
+                if day_idx < 0:
+                    continue
+                # Note column order: all, dir, org, paid (matches acq processor)
+                ws.append([
+                    day_idx,
+                    float(row['all']),
+                    float(row['dir']),
+                    float(row['org']),
+                    float(row['paid']),
+                ])
+                row_count += 1
+
+            # Pad with empty rows so the channel section starts around row 919
+            target_section_row = 919
+            current_row = 9 + row_count + 1  # 9 header + data + 1
+            pad = max(0, target_section_row - current_row)
+            for _ in range(pad):
+                ws.append([''])
+
+            # Write Default Channel Group section
+            ws.append(['Default Channel Group'])
+            if chan_col:
+                ch_totals = df.groupby(chan_col)[sess_col].sum().sort_values(ascending=False)
+                for name, total in ch_totals.items():
+                    if total > 0 and name and name != '(not set)':
+                        ws.append([str(name), float(total)])
         return
 
     # ─── User Attributes (Country / City / Language / Gender / Age / Interests) ───
@@ -1630,7 +1701,7 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
         else:
             channel_filters = [('all', None)]
 
-        def write_dim_section(label, col_name):
+        def write_dim_section(label, col_name, capitalize=False):
             if col_name not in cols:
                 return
             for seg_name, chan_val in channel_filters:
@@ -1647,12 +1718,17 @@ def build_ga4_sheet_formatted(ws, ga4_df, ga4_type):
                 ws.append([label])
                 for _, r in agg.iterrows():
                     name = str(r[col_name]).strip()
-                    if name and name != '(not set)':
-                        ws.append([name, float(r[users_col])])
+                    if not name or name == '(not set)':
+                        continue
+                    # Pre-capitalize device names so processor's mutating capitalization
+                    # doesn't break cross-segment lookups (mobile vs Mobile etc.)
+                    if capitalize and name.islower():
+                        name = name.capitalize()
+                    ws.append([name, float(r[users_col])])
                 ws.append([''])
 
         write_dim_section('Operating system', 'operatingSystem')
-        write_dim_section('Device category', 'deviceCategory')
+        write_dim_section('Device category', 'deviceCategory', capitalize=True)
         write_dim_section('Browser', 'browser')
         write_dim_section('Screen resolution', 'screenResolution')
         return

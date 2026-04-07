@@ -71,7 +71,7 @@ def get_client(client_secret_path):
 
 REPORTS = {
     'engagement': {
-        'dimensions': ['date'],
+        'dimensions': ['date', 'sessionDefaultChannelGroup'],
         'metrics': [
             'sessions', 'engagedSessions', 'averageSessionDuration',
             'screenPageViews', 'screenPageViewsPerSession',
@@ -152,9 +152,9 @@ def fetch_report(client, report_name, start_date=None, end_date=None):
     config = REPORTS[report_name]
 
     if start_date is None:
-        start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        start_date = '2025-01-01'
     if end_date is None:
-        end_date = 'today'
+        end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
     rows = []
     if '_sub_reports' in config:

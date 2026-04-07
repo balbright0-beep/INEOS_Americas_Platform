@@ -527,14 +527,23 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
 
 # --- GA4 API Pull ---
 @router.post("/pull-ga4")
-async def pull_ga4(days: int = 90, admin=Depends(require_admin), db: Session = Depends(get_db)):
-    """Pull all 6 GA4 reports via Google Analytics Data API."""
+async def pull_ga4(days: int = 0, admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """Pull all 6 GA4 reports via Google Analytics Data API.
+
+    days=0 (default): pull from 2025-01-01 through yesterday.
+    days>0: pull last N days through yesterday.
+    """
     import os
     try:
         from app.ga4_api import fetch_all_reports, save_reports_to_cache
         client_secret = os.environ.get('GA4_CLIENT_SECRET_PATH', 'ga4_credentials.json')
-        start = (datetime.utcnow() - __import__('datetime').timedelta(days=days)).strftime('%Y-%m-%d')
-        results = fetch_all_reports(client_secret, start_date=start)
+        from datetime import timedelta as _td
+        end = (datetime.utcnow() - _td(days=1)).strftime('%Y-%m-%d')
+        if days and days > 0:
+            start = (datetime.utcnow() - _td(days=days)).strftime('%Y-%m-%d')
+        else:
+            start = '2025-01-01'
+        results = fetch_all_reports(client_secret, start_date=start, end_date=end)
         # Save to cache
         cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
         os.makedirs(cache_dir, exist_ok=True)
