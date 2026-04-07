@@ -627,9 +627,19 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
 
     # ── Data rows (3+) sorted by market ──
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
-    for region in region_order:
-        dealers = [(dk, s) for dk, s in stats.items()
-                   if s['market'] == region and (s['mtd_ho'] > 0 or s['og'] > 0)]
+
+    # Group dealers by market, include "Other" for unmapped
+    dealers_by_region = defaultdict(list)
+    for dk, s in stats.items():
+        # Include dealers with any activity (MTD, on-ground, or any historical month)
+        has_activity = s['mtd_ho'] > 0 or s['og'] > 0 or sum(s['monthly'].values()) > 0
+        if not has_activity:
+            continue
+        mkt = s['market'] if s['market'] in region_order else 'Other'
+        dealers_by_region[mkt].append((dk, s))
+
+    for region in region_order + ['Other']:
+        dealers = dealers_by_region.get(region, [])
         dealers.sort(key=lambda x: -x[1]['mtd_ho'])
 
         for dk, s in dealers:
@@ -909,8 +919,16 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
                            'mb30', 'mb60', 'mb90', 'mb_sales')}
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
 
-    for region in region_order:
-        dealers = [(dk, kpi) for dk, kpi in dk_data.items() if kpi['market'] == region]
+    # Group dealers by region, but also include "Other" for unmapped
+    dealers_by_region = defaultdict(list)
+    for dk, kpi in dk_data.items():
+        if kpi['leads'] < 1:
+            continue  # Skip dealers with no leads
+        mkt = kpi['market'] if kpi['market'] in region_order else 'Other'
+        dealers_by_region[mkt].append((dk, kpi))
+
+    for region in region_order + ['Other']:
+        dealers = dealers_by_region.get(region, [])
         dealers.sort(key=lambda x: -x[1]['leads'])
 
         for dk, kpi in dealers:
