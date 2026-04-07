@@ -335,7 +335,11 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             result_data = ingest_fn(tmp.name)
 
             if isinstance(result_data, dict):
-                row_count = sum(len(v) for v in result_data.values() if isinstance(v, list))
+                # Count entries: sum list lengths + dict lengths
+                row_count = sum(
+                    len(v) for v in result_data.values()
+                    if isinstance(v, (list, dict))
+                )
             else:
                 row_count = len(result_data)
 
