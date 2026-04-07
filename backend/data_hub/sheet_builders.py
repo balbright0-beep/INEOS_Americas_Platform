@@ -1168,12 +1168,28 @@ def build_santander_sheets(wb, cache_dir):
                 ws.append([serial, int(volume)])
         print(f"  Santander Report: {len(monthly)} months")
 
-    # Daily data → "App Report MoM" (all), split into Finance/Lease estimated
+    # Daily data → "App Report MoM" (all), "App Report Finance", "App Report Lease"
     daily = sant_data.get('daily', {})
     daily_finance = sant_data.get('daily_finance', {})
     daily_lease = sant_data.get('daily_lease', {})
 
-    # If no Finance/Lease split, estimate from total (roughly 80% Finance, 20% Lease)
+    # Try loading separate Finance/Lease JSON from their own upload keys
+    for fname, target in [('santander_finance.json', 'finance'), ('santander_lease.json', 'lease')]:
+        fpath = os.path.join(cache_dir, 'data', fname)
+        if os.path.exists(fpath):
+            try:
+                with open(fpath) as f:
+                    sub_data = json.load(f)
+                if target == 'finance':
+                    daily_finance = sub_data.get('daily', {})
+                    print(f"  Santander Finance: {len(daily_finance)} daily entries")
+                else:
+                    daily_lease = sub_data.get('daily', {})
+                    print(f"  Santander Lease: {len(daily_lease)} daily entries")
+            except Exception:
+                pass
+
+    # If still no split, estimate from total
     if daily and not daily_finance:
         for date_str, vol in daily.items():
             v = int(vol)

@@ -20,13 +20,36 @@ from datetime import datetime, timedelta
 from data_hub.utils import safe_int
 
 
-def ingest_santander(filepath):
-    """Parse Santander pivot file and extract daily + monthly data."""
+def detect_product_filter(filepath):
+    """Detect the Product filter value from the Santander pivot file."""
+    import openpyxl
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    ws = wb.active
+    product = '(All)'
+    for row in ws.iter_rows(min_row=1, max_row=12, max_col=6, values_only=True):
+        vals = [str(v).strip() for v in row if v]
+        if len(vals) >= 2 and vals[0] == 'Product':
+            product = vals[1]
+            break
+    wb.close()
+    return product
+
+
+def ingest_santander(filepath, product_override=None):
+    """Parse Santander pivot file and extract daily + monthly data.
+
+    Auto-detects Product filter from file: (All), Retail, or Lease.
+    product_override forces a specific product type.
+    """
+    product = product_override or detect_product_filter(filepath)
+    print(f"  Santander Product filter: {product}")
+
     result = {
+        'product': product,
         'monthly': {},    # YYYY-MM → total apps
-        'daily': {},      # YYYY-MM-DD → daily count (all products)
-        'daily_finance': {},  # YYYY-MM-DD → finance daily
-        'daily_lease': {},    # YYYY-MM-DD → lease daily
+        'daily': {},      # YYYY-MM-DD → daily count
+        'daily_finance': {},  # populated if product=Retail
+        'daily_lease': {},    # populated if product=Lease
     }
 
     try:

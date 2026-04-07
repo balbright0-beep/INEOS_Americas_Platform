@@ -302,6 +302,8 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             'stock_pipeline': ('data_hub.ingest.stock_pipeline', 'ingest_stock_pipeline'),
             'c4c_leads': ('data_hub.ingest.c4c_leads', 'ingest_c4c_leads'),
             'santander': ('data_hub.ingest.santander', 'ingest_santander'),
+            'santander_finance': ('data_hub.ingest.santander', 'ingest_santander'),
+            'santander_lease': ('data_hub.ingest.santander', 'ingest_santander'),
             'sales_order': ('data_hub.ingest.sales_order', 'ingest_sales_order'),
             'qm_leads': ('data_hub.ingest.qm_leads', 'ingest_qm_leads'),
             'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
