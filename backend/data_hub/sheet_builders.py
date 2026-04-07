@@ -943,165 +943,63 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
 # ═══════════════════════════════════════════════════════════════════════
 
 def build_matchback_sheet(ws, export_rows, leads, urban_science=None, dealer_mb=None):
-    """Populate Matchback Report using Urban Science buyer names + C4C lead names.
+    """Populate Matchback Report using pre-computed dealer_mb data.
+    No expensive re-computation — uses dealer_mb from compute_matchback()."""
+    if dealer_mb is None:
+        dealer_mb = {}
 
-    Matching logic (replicates Master File):
-    1. Dealer must match (Urban Science dealer ↔ Lead retailer)
-    2. 3+ character substring match between buyer last name (Urban Science)
-       and lead customer last name (C4C leads)
-    3. Lead date must be within N days before sale date (30/60/90/120)
-    """
-    today = datetime.now()
-    r120_start = today - timedelta(days=120)
+    all_dealers = sorted(dealer_mb.keys())
 
-    def _extract_last_name(name):
-        """Extract last name and generate 3-char fragments."""
-        if not name:
-            return '', set()
-        name = str(name).strip().upper()
-        # Take last word as last name, or full name if single word
-        parts = name.split()
-        last = parts[-1] if parts else name
-        # Remove common suffixes
-        for suffix in ('JR', 'SR', 'III', 'II', 'IV'):
-            if last == suffix and len(parts) > 1:
-                last = parts[-2]
-        # Generate 4-char substrings (reduces false positives vs 3-char)
-        frags = set()
-        for i in range(len(last) - 3):
-            frags.add(last[i:i+4])
-        return last, frags
-
-    def _names_match(name1_frags, name2_frags):
-        """Check if any 4-char fragment is shared between two names."""
-        return bool(name1_frags & name2_frags)
-
-    # Build per-dealer lead data: [(date, last_name, name_frags), ...]
-    dealer_leads = defaultdict(list)
-    if leads is not None and len(leads) > 0:
-        for _, lr in leads.iterrows():
-            dealer = _safe_str(lr.get('retailer_name', ''))
-            if not dealer:
-                continue
-            dealer = dealer.replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
-            dealer = ' '.join(w for w in dealer.split() if w != 'GRENADIER').strip()
-            ld = _safe_date(lr.get('start_date', lr.get('created_on', None)))
-            if not ld:
-                continue
-            # Get customer name from lead
-            cust = _safe_str(lr.get('customer_name', lr.get('lead_name', '')))
-            last, frags = _extract_last_name(cust)
-            if frags:
-                dealer_leads[dealer].append((ld, last, frags))
-
-    # Build per-dealer sale data from Urban Science (has buyer last names)
-    dealer_sales = defaultdict(list)  # dealer_upper → [(sale_date, buyer_last, buyer_frags), ...]
-    if urban_science is not None and len(urban_science) > 0:
-        for _, sr in urban_science.iterrows():
-            dealer = _safe_str(sr.get('dealer_name', ''))
-            if not dealer:
-                continue
-            dealer = dealer.replace(' INEOS Grenadier', '').replace(' INEOS', '').strip().upper()
-            dealer = ' '.join(w for w in dealer.split() if w != 'GRENADIER').strip()
-            sd = _safe_date(sr.get('sale_date', None))
-            if not sd:
-                continue
-            buyer_last = _safe_str(sr.get('customer_last_name', ''))
-            last, frags = _extract_last_name(buyer_last)
-            dealer_sales[dealer].append((sd, last, frags))
-
-    all_dealers = sorted(set(list(dealer_leads.keys()) + list(dealer_sales.keys())))
-    print(f"  [Matchback] {len(dealer_leads)} dealers with leads, {len(dealer_sales)} dealers with sales")
-
-    # Headers
-    ws.append([''] * 20)
+    # Headers (rows 0-2)
+    ws.append([0.0] + [''] * 19)  # row 0: numeric (processor skips)
     ws.append(['', 'Retailer', 'R120 Brand Leads', 'All Time Leads', '',
                'R120 Retail Sales', '', 'R30 MB Count', 'R30 MB%',
                'R60 MB Count', 'R60 MB%', 'R90 MB Count', 'R90 MB%',
                'R120 MB Count', 'R120 MB%', 'All Time MB Count', 'All Time MB%'])
     ws.append([''] * 20)
 
-    t = {'leads_120': 0, 'leads_all': 0, 'sales_120': 0, 'sales_all': 0,
-         'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb120': 0, 'mb_all': 0}
+    t = {'sales': 0, 'mb30': 0, 'mb60': 0, 'mb90': 0, 'mb_all': 0}
 
     for dk in all_dealers:
-        if not dk or dk in ('', 'INEOS CA STOCK'):
+        if not dk:
             continue
-
-        leads_list = dealer_leads.get(dk, [])
-        sales_list = dealer_sales.get(dk, [])
-
-        r120_leads = sum(1 for ld, _, _ in leads_list if ld >= r120_start)
-        all_leads_n = len(leads_list)
-        r120_sales = sum(1 for sd, _, _ in sales_list if sd >= r120_start)
-        all_sales_n = len(sales_list)
-
-        # Matchback: for each sale, find if a lead with matching name fragment
-        # existed within N days prior at the same dealer
-        mb30 = mb60 = mb90 = mb120 = mb_all = 0
-        for sd, buyer_last, buyer_frags in sales_list:
-            if not buyer_frags:
-                continue
-            matched = False
-            for ld, lead_last, lead_frags in leads_list:
-                diff = (sd - ld).days
-                if diff < 0 or diff > 365:
-                    continue
-                if _names_match(buyer_frags, lead_frags):
-                    if diff <= 120:
-                        mb120 += 1
-                        if diff <= 90: mb90 += 1
-                        if diff <= 60: mb60 += 1
-                        if diff <= 30: mb30 += 1
-                    mb_all += 1
-                    matched = True
-                    break  # count each sale once
+        mb = dealer_mb[dk]
+        s = mb['sales'] or 1
 
         row = [''] * 20
         row[1] = dk.title()
-        row[2] = r120_leads
-        row[3] = all_leads_n
-        row[5] = r120_sales
-        row[7] = mb30
-        row[8] = (mb30 / r120_sales) if r120_sales > 0 else 0
-        row[9] = mb60
-        row[10] = (mb60 / r120_sales) if r120_sales > 0 else 0
-        row[11] = mb90
-        row[12] = (mb90 / r120_sales) if r120_sales > 0 else 0
-        row[13] = mb120
-        row[14] = (mb120 / r120_sales) if r120_sales > 0 else 0
-        row[15] = mb_all
-        row[16] = (mb_all / all_sales_n) if all_sales_n > 0 else 0
+        row[2] = 0  # R120 leads (not tracked in dealer_mb)
+        row[5] = mb['sales']
+        row[7] = mb['mb30']
+        row[8] = round(mb['mb30'] / s, 4)
+        row[9] = mb['mb60']
+        row[10] = round(mb['mb60'] / s, 4)
+        row[11] = mb['mb90']
+        row[12] = round(mb['mb90'] / s, 4)
+        row[13] = mb.get('mb120', mb['mb90'])
+        row[14] = round(mb.get('mb120', mb['mb90']) / s, 4)
+        row[15] = mb['mb_all']
+        row[16] = round(mb['mb_all'] / s, 4)
         ws.append(row)
 
-        t['leads_120'] += r120_leads
-        t['leads_all'] += all_leads_n
-        t['sales_120'] += r120_sales
-        t['sales_all'] += all_sales_n
-        t['mb30'] += mb30
-        t['mb60'] += mb60
-        t['mb90'] += mb90
-        t['mb120'] += mb120
-        t['mb_all'] += mb_all
+        for k in t:
+            t[k] += mb.get(k, 0)
 
     # Total row
-    s120 = t['sales_120'] or 1
-    s_all = t['sales_all'] or 1
+    s = t['sales'] or 1
     row = [''] * 20
     row[1] = 'Total'
-    row[2] = t['leads_120']
-    row[3] = t['leads_all']
-    row[5] = t['sales_120']
+    row[5] = t['sales']
     row[7] = t['mb30']
-    row[8] = t['mb30'] / s120
+    row[8] = round(t['mb30'] / s, 4)
     row[9] = t['mb60']
-    row[10] = t['mb60'] / s120
+    row[10] = round(t['mb60'] / s, 4)
     row[11] = t['mb90']
-    row[12] = t['mb90'] / s120
-    row[13] = t['mb120']
-    row[14] = t['mb120'] / s120
+    row[12] = round(t['mb90'] / s, 4)
+    row[13] = t['mb90']
+    row[14] = round(t['mb90'] / s, 4)
     row[15] = t['mb_all']
-    row[16] = t['mb_all'] / s_all
+    row[16] = round(t['mb_all'] / s, 4)
     ws.append(row)
 
     # Since Inception section
@@ -1112,11 +1010,10 @@ def build_matchback_sheet(ws, export_rows, leads, urban_science=None, dealer_mb=
             continue
         row = [''] * 20
         row[1] = dk.title()
-        row[2] = len(dealer_leads.get(dk, []))
-        row[5] = len(dealer_sales.get(dk, []))
+        row[5] = dealer_mb[dk]['sales']
         ws.append(row)
 
-    print(f"  Matchback: MB30={t['mb30']}/{t['sales_120']}={round(t['mb30']/s120*100,1)}%, MB90={t['mb90']}/{t['sales_120']}={round(t['mb90']/s120*100,1)}%")
+    print(f"  Matchback sheet: {len(all_dealers)} dealers, MB30={t['mb30']}/{t['sales']}")
 
 
 def build_santander_sheets(wb, cache_dir):
