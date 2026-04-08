@@ -74,12 +74,18 @@ def delete_user(user_id: int, admin=Depends(require_admin), db: Session = Depend
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+    if user.username == admin.username:
+        raise HTTPException(400, "You cannot delete your own account")
     if user.role == "admin":
-        raise HTTPException(400, "Cannot delete admin")
+        # Refuse to delete the last remaining admin so the system stays manageable
+        admin_count = db.query(User).filter(User.role == "admin").count()
+        if admin_count <= 1:
+            raise HTTPException(400, "Cannot delete the last remaining admin")
     username = user.username
+    role = user.role
     db.delete(user)
     db.commit()
-    audit(db, "delete_user", admin.username, f"Deleted {username}")
+    audit(db, "delete_user", admin.username, f"Deleted {role} {username}")
     return {"ok": True}
 
 

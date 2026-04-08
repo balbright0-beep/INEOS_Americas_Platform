@@ -50,3 +50,24 @@ def login(data: dict, db: Session = Depends(get_db)):
 @router.get("/me")
 def me(user: User = Depends(get_current_user)):
     return {"username": user.username, "role": user.role, "dealer_name": user.dealer_name}
+
+
+@router.post("/password-reset-request")
+def password_reset_request(data: dict, db: Session = Depends(get_db)):
+    """
+    Public endpoint — anyone can hit it pre-login. We log the request to the
+    audit log so admins can act on it from the User Management UI. Always
+    returns 200 regardless of whether the username exists, to prevent
+    username enumeration.
+    """
+    from app.models import AuditLog
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
+    if username and email:
+        db.add(AuditLog(
+            action="password_reset_request",
+            user=username,
+            detail=f"Self-service reset request — contact at {email}",
+        ))
+        db.commit()
+    return {"ok": True}
