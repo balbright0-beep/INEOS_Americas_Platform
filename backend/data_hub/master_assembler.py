@@ -251,13 +251,31 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
             if len(vin) > 3:
                 ho_map[vin] = r
 
-    # Order No → vessel/ETA (Stock & Pipeline)
-    vessel_map = {}
+    # Vessel/ETA lookup (Stock & Pipeline)
+    # Build TWO indexes — VIN-keyed (preferred, most reliable) and Order No-keyed
+    # (fallback). Previously this was order_no-only which silently dropped
+    # vessel/ETA for any on-water unit whose SAP order_no didn't exactly match
+    # the stock pipeline order_no (and there are MANY such mismatches because
+    # the two systems treat trailing zeros and prefixes differently).
+    vessel_map_by_vin = {}
+    vessel_map_by_order = {}
     if stock_pipeline is not None and len(stock_pipeline) > 0:
+        sp_cols = list(stock_pipeline.columns)
+        print(f"  [vessel] stock_pipeline rows={len(stock_pipeline)}, cols={sp_cols}")
+        has_vessel_col = 'vessel' in sp_cols
+        vessel_nonempty = 0
         for _, r in stock_pipeline.iterrows():
+            vin_sp = str(r.get('vin', '')).strip().upper()
             on = str(r.get('order_no', '')).strip()
-            if len(on) > 3:
-                vessel_map[on] = r
+            v_val = r.get('vessel', '') if has_vessel_col else ''
+            v_str = str(v_val).strip() if v_val is not None else ''
+            if v_str and v_str.lower() not in ('nan', 'none', 'nat'):
+                vessel_nonempty += 1
+            if vin_sp and len(vin_sp) > 3 and vin_sp not in ('NAN', 'NONE'):
+                vessel_map_by_vin[vin_sp] = r
+            if on and len(on) > 3 and on.lower() not in ('nan', 'none'):
+                vessel_map_by_order[on] = r
+        print(f"  [vessel] indexed by_vin={len(vessel_map_by_vin)}, by_order={len(vessel_map_by_order)}, rows_with_vessel_nonempty={vessel_nonempty}")
 
     # VIN → bill-to-dealer (Sales Order / List of Sales Orders)
     billto_map = {}
@@ -344,6 +362,13 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
             pass
         return None
 
+    vessel_hits_vin = 0
+    vessel_hits_order = 0
+    vessel_misses = 0
+    vessel_written = 0
+    on_water_total = 0
+    on_water_with_vessel = 0
+
     for _, r in sap.iterrows():
         vin = _sap_val(r, 'vin', 'Vehicle VIN').upper()
         order_no = _sap_val(r, 'order_no', 'SO Sales Order No')
@@ -372,11 +397,54 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         ho_date = ho.get('handover_date', None) if isinstance(ho, dict) else getattr(ho, 'handover_date', None)
         rev_rec = ho.get('rev_rec_date', None) if isinstance(ho, dict) else getattr(ho, 'rev_rec_date', None)
 
-        # Vessel data (keyed by order_no)
-        vsl = vessel_map.get(order_no, {})
-        eta = vsl.get('shipping_eta', None) if isinstance(vsl, dict) else getattr(vsl, 'shipping_eta', None)
-        vessel = vsl.get('vessel', '') if isinstance(vsl, dict) else getattr(vsl, 'vessel', '')
-        dis = vsl.get('days_in_stock', vsl.get('dis', '')) if isinstance(vsl, dict) else getattr(vsl, 'days_in_stock', getattr(vsl, 'dis', ''))
+        # Vessel data — try VIN first (most reliable), then order_no fallback.
+        # Uses a safe getter so it works on both pandas Series and dicts, and
+        # sanitizes NaN/None placeholders so on-water units don't get literal
+        # "nan" in the Vessel column.
+        def _vslget(obj, *keys):
+            if obj is None:
+                return None
+            for k in keys:
+                try:
+                    v = obj[k] if (isinstance(obj, dict) or hasattr(obj, '__getitem__')) else None
+                except (KeyError, IndexError, TypeError):
+                    v = None
+                if v is None:
+                    try:
+                        v = obj.get(k, None) if hasattr(obj, 'get') else None
+                    except Exception:
+                        v = None
+                if v is not None:
+                    try:
+                        if pd.isna(v):
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                    s = str(v).strip()
+                    if s and s.lower() not in ('nan', 'none', 'nat'):
+                        return v
+            return None
+
+        vsl = vessel_map_by_vin.get(vin)
+        if vsl is not None:
+            vessel_hits_vin += 1
+        else:
+            vsl = vessel_map_by_order.get(order_no)
+            if vsl is not None:
+                vessel_hits_order += 1
+            else:
+                vessel_misses += 1
+        eta = _vslget(vsl, 'shipping_eta')
+        vessel_raw = _vslget(vsl, 'vessel')
+        dis = _vslget(vsl, 'days_in_stock', 'dis') or ''
+        vessel = '' if vessel_raw is None else str(vessel_raw).strip()
+        if vessel:
+            vessel_written += 1
+        st = status.lower()
+        if 'water' in st or '4.' in st or 'departed' in st:
+            on_water_total += 1
+            if vessel:
+                on_water_with_vessel += 1
 
         # Bill-to dealer — from Sales Order, with channel-based fallback
         # The processor classifies "Fleet", "Internal", "Enterprise" as non-retail
@@ -486,6 +554,9 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         row[75] = camp_code        # [75] Campaign Code
 
         ws.append(row)
+
+    print(f"  [vessel] join results: vin_hits={vessel_hits_vin}, order_hits={vessel_hits_order}, misses={vessel_misses}, vessel_written={vessel_written}")
+    print(f"  [vessel] on-water units: {on_water_with_vessel}/{on_water_total} have vessel name populated")
 
 
 def _write_leads_sheet(ws, leads, qm_leads=None):
