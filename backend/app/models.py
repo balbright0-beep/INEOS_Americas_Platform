@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, LargeBinary, Boolean, func
+from sqlalchemy import Column, Integer, String, Text, DateTime, LargeBinary, func
 from app.database import Base
 
 
@@ -10,12 +10,6 @@ class User(Base):
     role = Column(String, nullable=False)  # admin, internal, dealer
     dealer_name = Column(String)  # only for dealer accounts
     created_at = Column(DateTime, server_default=func.now())
-    # MFA (email-based one-time code). Admin-only today, all-users tomorrow.
-    email = Column(String)
-    mfa_enabled = Column(Boolean, default=False)
-    mfa_code_hash = Column(String)          # bcrypt hash of the latest 6-digit code
-    mfa_code_expires = Column(DateTime)     # UTC expiry of the code
-    mfa_attempts = Column(Integer, default=0)  # failed verification attempts
 
 
 class Bulletin(Base):
