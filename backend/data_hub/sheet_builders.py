@@ -941,26 +941,57 @@ def build_objectives_sheet(ws, template_path=None):
 def build_historical_sheet(ws, export_rows, mkt_map):
     """Populate Historical Sales.
 
-    Processor reads: Row 1=dates(serial), Row 2=total, Row 3=SW, Row 4=QM,
-    Row 5=SVO, Rows 30-68=retail by dealer.
+    Layout expected by the processor (both build_HIST and build_HD):
+      Row 0: header (blank)
+      Row 1: date serials (col 2+)
+      Row 2: Total Retail
+      Row 3: SW retail
+      Row 4: QM retail
+      Row 5: SVO retail
+      Rows 6-9: padding
+      Row 10: Wholesale Total        ← driven by rev_rec_date (handover report)
+      Row 11: WS SW
+      Row 12: WS QM
+      Rows 13-28: padding
+      Rows 30-67: retail by dealer  (read_sheet index 29-67)
+      Row 69: (reserved total wholesale row read by build_HD)
+      Rows 70-101: wholesale by dealer (read_sheet index 69-101)
+
+    Retail is driven by `ho_date` (customer handover) and wholesale is driven
+    by `rev_rec_date` (the revenue-recognition date from the Handover Report,
+    i.e. when the vehicle is sold from INEOS to the dealer). Both can and do
+    fall in different months, so the wholesale columns must be aggregated
+    independently from retail.
     """
-    monthly = defaultdict(lambda: {'sw': 0, 'qm': 0, 'svo': 0, 'total': 0})
-    dealer_monthly = defaultdict(lambda: defaultdict(int))
+    retail_monthly = defaultdict(lambda: {'SW': 0, 'QM': 0, 'SVO': 0, 'total': 0})
+    wholesale_monthly = defaultdict(lambda: {'SW': 0, 'QM': 0, 'SVO': 0, 'total': 0})
+    dealer_retail = defaultdict(lambda: defaultdict(int))
+    dealer_wholesale = defaultdict(lambda: defaultdict(int))
 
     for r in export_rows:
-        if not r['ho_date'] or r['country_code'] not in ('US', 'CA', 'MX'):
+        if r['country_code'] not in ('US', 'CA', 'MX'):
             continue
-        ym = r['ho_date'].strftime('%Y-%m')
-        monthly[ym][r['body']] += 1
-        monthly[ym]['total'] += 1
-        dealer_monthly[r['dealer_upper']][ym] += 1
+        body = r.get('body') or 'SVO'
+        # Retail — keyed on handover date
+        if r.get('ho_date'):
+            ym = r['ho_date'].strftime('%Y-%m')
+            retail_monthly[ym][body] = retail_monthly[ym].get(body, 0) + 1
+            retail_monthly[ym]['total'] += 1
+            dealer_retail[r['dealer_upper']][ym] += 1
+        # Wholesale — keyed on rev_rec_date from handover report
+        if r.get('rev_rec_date'):
+            wm = r['rev_rec_date'].strftime('%Y-%m')
+            wholesale_monthly[wm][body] = wholesale_monthly[wm].get(body, 0) + 1
+            wholesale_monthly[wm]['total'] += 1
+            dealer_wholesale[r['dealer_upper']][wm] += 1
 
-    if not monthly:
-        for i in range(15):
+    if not retail_monthly and not wholesale_monthly:
+        for _ in range(15):
             ws.append([''] * 15)
         return
 
-    all_months = sorted(monthly.keys())
+    # Union of all months touched by either retail or wholesale
+    all_months = sorted(set(retail_monthly.keys()) | set(wholesale_monthly.keys()))
     ncols = len(all_months) + 2
 
     # Row 0: empty header
@@ -973,27 +1004,55 @@ def build_historical_sheet(ws, export_rows, mkt_map):
         date_row.append(_date_to_serial(datetime(int(y), int(m), 1)))
     ws.append(date_row)
 
-    # Row 2-5: totals by body type
-    for label, key in [('Total Retail', 'total'), ('SW', 'sw'), ('QM', 'qm'), ('SVO', 'svo')]:
-        ws.append(['', label] + [monthly[ym][key] for ym in all_months])
+    # Rows 2-5: retail totals by body type (keyed on handover date)
+    for label, key in [('Total Retail', 'total'), ('SW', 'SW'), ('QM', 'QM'), ('SVO', 'SVO')]:
+        ws.append(['', label] + [retail_monthly[ym].get(key, 0) for ym in all_months])
 
     # Rows 6-9: padding
     for _ in range(4):
         ws.append([''] * ncols)
 
-    # Row 10-12: wholesale (no data)
-    for label in ['Wholesale Total', 'WS SW', 'WS QM']:
-        ws.append(['', label] + [0] * len(all_months))
+    # Rows 10-12: wholesale totals by body type (keyed on rev_rec_date)
+    ws.append(['', 'Wholesale Total'] + [wholesale_monthly[ym].get('total', 0) for ym in all_months])
+    ws.append(['', 'WS SW']           + [wholesale_monthly[ym].get('SW', 0)    for ym in all_months])
+    ws.append(['', 'WS QM']           + [wholesale_monthly[ym].get('QM', 0)    for ym in all_months])
 
     # Pad to row 29
     while ws.max_row < 30:
         ws.append([''] * ncols)
 
-    # Rows 30+: retail by dealer
-    all_dealers = sorted(dealer_monthly.keys())
-    for dk in all_dealers[:38]:
+    # Rows 30-67: retail by dealer (38 slots)
+    # Sort by total retail descending so the highest-volume dealers land
+    # inside the 38-row window the processor reads.
+    retail_dealers_sorted = sorted(
+        dealer_retail.keys(),
+        key=lambda dk: -sum(dealer_retail[dk].values()),
+    )
+    for dk in retail_dealers_sorted[:38]:
         mkt = mkt_map.get(dk, '')
-        ws.append([mkt, dk.title()] + [dealer_monthly[dk].get(ym, 0) for ym in all_months])
+        ws.append([mkt, dk.title()] + [dealer_retail[dk].get(ym, 0) for ym in all_months])
+
+    # Pad so the next .append() lands at 1-indexed row 70 == zero-indexed 69.
+    # build_HD reads rows[69] as the all-network wholesale total AND ALSO
+    # iterates dealer wholesale rows from the same index. To make both work:
+    #   • Write row 70 with an EMPTY name column — process_dealer_rows skips
+    #     rows where raw_name is falsy, so this row never becomes a phantom
+    #     "Wholesale Total" dealer in the dropdown.
+    #   • The numeric values in that row still satisfy total_w_row = rows[69].
+    while ws.max_row < 69:
+        ws.append([''] * ncols)
+
+    # Row 70 (index 69): total wholesale, blank name, aggregated values
+    ws.append(['', ''] + [wholesale_monthly[ym].get('total', 0) for ym in all_months])
+
+    # Rows 71-102: wholesale by dealer (32 slots read by build_HD)
+    wholesale_dealers_sorted = sorted(
+        dealer_wholesale.keys(),
+        key=lambda dk: -sum(dealer_wholesale[dk].values()),
+    )
+    for dk in wholesale_dealers_sorted[:32]:
+        mkt = mkt_map.get(dk, '')
+        ws.append([mkt, dk.title()] + [dealer_wholesale[dk].get(ym, 0) for ym in all_months])
 
 
 # ═══════════════════════════════════════════════════════════════════════
