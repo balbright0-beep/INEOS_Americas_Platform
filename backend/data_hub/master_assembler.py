@@ -366,8 +366,10 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
     vessel_hits_order = 0
     vessel_misses = 0
     vessel_written = 0
+    eta_written = 0
     on_water_total = 0
     on_water_with_vessel = 0
+    on_water_with_eta = 0
 
     for _, r in sap.iterrows():
         vin = _sap_val(r, 'vin', 'Vehicle VIN').upper()
@@ -434,14 +436,15 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
                 vessel_hits_order += 1
             else:
                 vessel_misses += 1
-        eta = _vslget(vsl, 'shipping_eta')
-        vessel_raw = _vslget(vsl, 'vessel')
+        eta = _vslget(vsl, 'shipping_eta', 'eta', 'eta_date', 'arrival_date', 'port_eta', 'destination_eta')
+        vessel_raw = _vslget(vsl, 'vessel', 'vessel_name')
         dis = _vslget(vsl, 'days_in_stock', 'dis') or ''
         vessel = '' if vessel_raw is None else str(vessel_raw).strip()
         if vessel:
             vessel_written += 1
         st = status.lower()
-        if 'water' in st or '4.' in st or 'departed' in st:
+        is_on_water = 'water' in st or '4.' in st or 'departed' in st
+        if is_on_water:
             on_water_total += 1
             if vessel:
                 on_water_with_vessel += 1
@@ -542,6 +545,10 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
         row[50] = plant            # [50] Plant Code
         row[51] = ho_serial        # [51] Handover Date (serial number)
         row[52] = eta_serial       # [52] ETA (serial number)
+        if eta_serial not in (None, ''):
+            eta_written += 1
+            if is_on_water:
+                on_water_with_eta += 1
         row[53] = vessel           # [53] Vessel
         row[54] = market           # [54] Market Override
         row[55] = rr_serial        # [55] Rev Rec Date (serial number)
@@ -555,8 +562,8 @@ def _write_export_sheet(ws, sap, handover, stock_pipeline, sales_order,
 
         ws.append(row)
 
-    print(f"  [vessel] join results: vin_hits={vessel_hits_vin}, order_hits={vessel_hits_order}, misses={vessel_misses}, vessel_written={vessel_written}")
-    print(f"  [vessel] on-water units: {on_water_with_vessel}/{on_water_total} have vessel name populated")
+    print(f"  [vessel] join results: vin_hits={vessel_hits_vin}, order_hits={vessel_hits_order}, misses={vessel_misses}, vessel_written={vessel_written}, eta_written={eta_written}")
+    print(f"  [vessel] on-water units: {on_water_with_vessel}/{on_water_total} have vessel, {on_water_with_eta}/{on_water_total} have ETA")
 
 
 def _write_leads_sheet(ws, leads, qm_leads=None):

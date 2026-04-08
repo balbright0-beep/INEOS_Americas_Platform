@@ -81,32 +81,65 @@ def _process_sp(df):
         df = df[df[region_col].astype(str).str.upper().str.contains('AMERICA', na=False)]
 
     # Normalize column names
+    # NOTE: Priority order matters — more specific keys must appear before
+    # generic ones so e.g. 'SHIPPING ETA' wins over a bare 'ETA' match.
     rename = {}
-    col_map = {
-        'ORDER NO': 'order_no',
-        'VIN': 'vin',
-        'SHIPPING ETA': 'shipping_eta',
-        'VESSEL': 'vessel',
-        'MARKET': 'market',
-        'VEHICLE STATUS DESC': 'vehicle_status',
-        'MODEL YEAR': 'model_year',
-        'DERIVATIVE': 'derivative',
-        'STOCK AGE FROM BUILD': 'stock_age',
-        'Handover Complete Date': 'handover_complete_date',
-        'FOK DATE': 'fok_date',
-    }
+    col_map = [
+        ('ORDER NO', 'order_no'),
+        ('VIN', 'vin'),
+        ('SHIPPING ETA', 'shipping_eta'),
+        ('ETA DATE', 'shipping_eta'),
+        ('ARRIVAL DATE', 'shipping_eta'),
+        ('DESTINATION ETA', 'shipping_eta'),
+        ('PORT ETA', 'shipping_eta'),
+        ('ETA', 'shipping_eta'),  # generic fallback — last resort
+        ('VESSEL', 'vessel'),
+        ('MARKET', 'market'),
+        ('VEHICLE STATUS DESC', 'vehicle_status'),
+        ('MODEL YEAR', 'model_year'),
+        ('DERIVATIVE', 'derivative'),
+        ('STOCK AGE FROM BUILD', 'stock_age'),
+        ('HANDOVER COMPLETE DATE', 'handover_complete_date'),
+        ('FOK DATE', 'fok_date'),
+    ]
     for actual_col in df.columns:
         col_upper = str(actual_col).upper().strip()
-        for key, val in col_map.items():
-            if key.upper() in col_upper:
+        for key, val in col_map:
+            if key in col_upper:
                 if val not in rename.values():  # Avoid duplicate mappings
                     rename[actual_col] = val
                     break
     df = df.rename(columns=rename)
+    print(f"  [stock_pipeline] renamed columns: {rename}")
 
-    # Parse shipping ETA
+    # Parse shipping ETA (may arrive as serial number, datetime, or string)
     if 'shipping_eta' in df.columns:
-        df['shipping_eta'] = df['shipping_eta'].apply(excel_serial_to_date)
+        def _parse_eta(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return excel_serial_to_date(v)
+            if isinstance(v, pd.Timestamp):
+                return v.to_pydatetime() if not pd.isna(v) else None
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s.lower() in ('nan', 'none', 'nat'):
+                    return None
+                try:
+                    ts = pd.to_datetime(s, errors='coerce')
+                    return ts.to_pydatetime() if not pd.isna(ts) else None
+                except Exception:
+                    return None
+            # Already a datetime-like
+            try:
+                if pd.isna(v):
+                    return None
+            except Exception:
+                pass
+            return v
+        df['shipping_eta'] = df['shipping_eta'].apply(_parse_eta)
+        non_null_eta = df['shipping_eta'].notna().sum()
+        print(f"  [stock_pipeline] shipping_eta parsed: {non_null_eta}/{len(df)} non-null")
 
     # VIN to uppercase
     if 'vin' in df.columns:
