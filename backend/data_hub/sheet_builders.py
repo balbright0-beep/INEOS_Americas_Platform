@@ -1383,7 +1383,7 @@ def compute_lead_quality(leads, export_rows, template_path=None):
     - bc = bad contact info %
     """
     if leads is None or len(leads) == 0:
-        return {'LQ_PERIODS': {}, 'LQ_MO': [], 'LQ_REP_MO': {}}
+        return {'LQ_PERIODS': {}, 'LQ_MO': [], 'LQ_REP_MO': {}, 'LQ_REP_ALL': []}
 
     today = datetime.now()
     periods = [
@@ -1548,10 +1548,23 @@ def compute_lead_quality(leads, export_rows, template_path=None):
         if total == 0:
             continue
         phone_counts = defaultdict(int)
+        email_counts = defaultdict(int)
         for l in rls:
             if l['phone']:
                 phone_counts[l['phone']] += 1
-        repeats = sum(1 for l in rls if l['phone'] and phone_counts[l['phone']] > 1)
+            if l['email']:
+                email_counts[l['email']] += 1
+        repeats = sum(
+            1 for l in rls
+            if (l['phone'] and phone_counts[l['phone']] > 1)
+            or (l['email'] and email_counts[l['email']] > 1)
+        )
+        # Same-month repeat (within this very bucket — same key seen 2+ times)
+        smr_count = sum(
+            1 for l in rls
+            if (l['phone'] and phone_counts[l['phone']] > 1)
+            or (l['email'] and email_counts[l['email']] > 1)
+        )
         no_phone = sum(1 for l in rls if not l['phone'])
         low_intent = sum(1 for l in rls if not l['has_td'])
         bad_contact = sum(1 for l in rls if not l['phone'] and not l['email'])
@@ -1560,15 +1573,67 @@ def compute_lead_quality(leads, export_rows, template_path=None):
             'm': mo,
             'rep': round(repeats / total * 100, 1),
             'nph': round(no_phone / total * 100, 1),
-            'smr': 0,  # Simplified
+            'smr': round(smr_count / total * 100, 1),
             'li': round(low_intent / total * 100, 1),
             'bc': round(bad_contact / total * 100, 1),
         })
 
+    # ── Repeat lead submitters: by month (2+) and all-time (3+) ──
+    # Mask emails to first 3 chars + ***@domain to keep PII low
+    def _mask_email(e):
+        if not e or '@' not in e:
+            return e or ''
+        local, _, domain = e.partition('@')
+        return (local[:3] + '***@' + domain) if local else '***@' + domain
+
+    # All-time: group by email, count >= 3
+    email_all = defaultdict(lambda: {'c': 0, 'r': set()})
+    for l in leads_list:
+        if l['email']:
+            email_all[l['email']]['c'] += 1
+            if l['retailer']:
+                email_all[l['email']]['r'].add(l['retailer'].title())
+    lq_rep_all = []
+    for email, info in email_all.items():
+        if info['c'] >= 3:
+            lq_rep_all.append({
+                'e': _mask_email(email),
+                'c': info['c'],
+                'r': ', '.join(sorted(info['r'])[:3]) or '-',
+            })
+    lq_rep_all.sort(key=lambda x: -x['c'])
+    lq_rep_all = lq_rep_all[:50]
+
+    # Per month: group by month+email, count >= 2
+    lq_rep_mo = {}
+    by_month = defaultdict(list)
+    for l in leads_list:
+        if l['email']:
+            mo = l['date'].strftime('%Y-%m')
+            by_month[mo].append(l)
+    for mo, rls in by_month.items():
+        em_counts = defaultdict(lambda: {'c': 0, 'r': set()})
+        for l in rls:
+            em_counts[l['email']]['c'] += 1
+            if l['retailer']:
+                em_counts[l['email']]['r'].add(l['retailer'].title())
+        items = []
+        for email, info in em_counts.items():
+            if info['c'] >= 2:
+                items.append({
+                    'e': _mask_email(email),
+                    'c': info['c'],
+                    'r': ', '.join(sorted(info['r'])[:3]) or '-',
+                })
+        if items:
+            items.sort(key=lambda x: -x['c'])
+            lq_rep_mo[mo] = items[:30]
+
     return {
         'LQ_PERIODS': lq_periods,
         'LQ_MO': lq_mo,
-        'LQ_REP_MO': {},  # Placeholder
+        'LQ_REP_MO': lq_rep_mo,
+        'LQ_REP_ALL': lq_rep_all,
     }
 
 

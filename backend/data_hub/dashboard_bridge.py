@@ -239,6 +239,8 @@ def _post_process_html(output_path, cache_dir):
     html = replace_const(html, "LQ_PERIODS", lq_data['LQ_PERIODS'])
     html = replace_const(html, "LQ_MO", lq_data['LQ_MO'])
     html = replace_const(html, "LQ_REP_MO", lq_data['LQ_REP_MO'])
+    if 'LQ_REP_ALL' in lq_data:
+        html = replace_const(html, "LQ_REP_ALL", lq_data['LQ_REP_ALL'])
 
     # ── Inject TD-to-sale percentages into DPD const ──
     tds_path = os.path.join(cache_dir, 'data', 'dpd_tds.json')
