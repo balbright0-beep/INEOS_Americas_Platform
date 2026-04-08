@@ -509,6 +509,14 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
         )
         import io, contextlib
 
+        # Flip progress state BEFORE dispatching to the threadpool so the
+        # very first poll from the frontend sees running=true. Otherwise
+        # there's a ~100-500ms window where the file-backed state still
+        # reflects the previous run (or the untouched initial state) and
+        # the poll loop may show "Idle".
+        rebuild_progress.start()
+        rebuild_progress.set_stage(3, "Rebuild dispatched", "Warming up worker thread")
+
         def _run():
             # Tee stdout: capture for build_log AND mirror to progress.log
             class _Tee(io.StringIO):
@@ -516,7 +524,10 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
                     super().write(s)
                     for line in str(s).splitlines():
                         if line.strip():
-                            rebuild_progress.log(line)
+                            try:
+                                rebuild_progress.log(line)
+                            except Exception:
+                                pass
                     return len(s)
             buf = _Tee()
             with contextlib.redirect_stdout(buf):
