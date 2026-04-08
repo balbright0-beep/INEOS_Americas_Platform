@@ -5655,6 +5655,10 @@ const pd=LQ_PERIODS[period];
 const n=pd.net;
 const periodLabel={"R90":"90 Days","R120":"120 Days","R180":"180 Days","R365":"365 Days","ALL":"All Time"}[period];
 document.getElementById("lqRetPeriod").textContent="Rolling "+periodLabel;
+// Filter the monthly trend series so the charts under the filter actually
+// respond to the period dropdown. R90≈3mo, R120≈4mo, R180≈6mo, R365≈12mo.
+const moWindow={"R90":3,"R120":4,"R180":6,"R365":12,"ALL":LQ_MO.length}[period]||LQ_MO.length;
+const LQ_MO_F=LQ_MO.slice(-moWindow);
 document.getElementById("lqKPIs").innerHTML=`
 <div class="kpi"><div class="kpi-v">${n.t.toLocaleString()}</div><div class="kpi-l">${periodLabel} Leads</div></div>
 <div class="kpi"><div class="kpi-v" style="color:${n.rep>15?'var(--flare)':n.rep>10?'#9A6B00':'var(--ok)'}">${n.rep}%</div><div class="kpi-l">Repeat Rate</div></div>
@@ -5664,24 +5668,24 @@ document.getElementById("lqKPIs").innerHTML=`
 <div class="kpi"><div class="kpi-v">${n.bd}</div><div class="kpi-l">Bad/Duplicate</div></div>
 <div class="kpi"><div class="kpi-v" style="color:${n.bc>2?'var(--flare)':n.bc>1?'#9A6B00':'var(--ok)'}">${n.bc}%</div><div class="kpi-l">Bad Contact Info</div></div>`;
 
-const labels=LQ_MO.map(d=>{const [y,m]=d.m.split('-');return new Date(y,m-1).toLocaleDateString('en-US',{month:'short',year:'2-digit'})});
+const labels=LQ_MO_F.map(d=>{const [y,m]=d.m.split('-');return new Date(y,m-1).toLocaleDateString('en-US',{month:'short',year:'2-digit'})});
 if(lqChTrend)lqChTrend.destroy();
 lqChTrend=new Chart(document.getElementById("chLqTrend").getContext("2d"),{type:"line",data:{labels:labels,datasets:[
-{label:"Repeat %",data:LQ_MO.map(d=>d.rep),borderColor:"#534AB7",fill:false,tension:0.3,pointRadius:3},
-{label:"No Phone %",data:LQ_MO.map(d=>d.nph),borderColor:"#E67300",backgroundColor:"#E67300",fill:false,tension:0.3,pointRadius:4,pointStyle:"rect",borderWidth:2.5},
-{label:"Same-Mo Repeat %",data:LQ_MO.map(d=>d.smr),borderColor:"#185FA5",fill:false,tension:0.3,pointRadius:3},
-{label:"Low Intent %",data:LQ_MO.map(d=>d.li),borderColor:"#0D9488",backgroundColor:"#0D9488",fill:false,tension:0.3,pointRadius:4,pointStyle:"triangle",borderWidth:2,borderDash:[8,4]},
-{label:"Bad Contact %",data:LQ_MO.map(d=>d.bc),borderColor:"#8B1A1A",fill:false,tension:0.3,pointRadius:3,borderDash:[2,2]}
+{label:"Repeat %",data:LQ_MO_F.map(d=>d.rep),borderColor:"#534AB7",fill:false,tension:0.3,pointRadius:3},
+{label:"No Phone %",data:LQ_MO_F.map(d=>d.nph),borderColor:"#E67300",backgroundColor:"#E67300",fill:false,tension:0.3,pointRadius:4,pointStyle:"rect",borderWidth:2.5},
+{label:"Same-Mo Repeat %",data:LQ_MO_F.map(d=>d.smr),borderColor:"#185FA5",fill:false,tension:0.3,pointRadius:3},
+{label:"Low Intent %",data:LQ_MO_F.map(d=>d.li),borderColor:"#0D9488",backgroundColor:"#0D9488",fill:false,tension:0.3,pointRadius:4,pointStyle:"triangle",borderWidth:2,borderDash:[8,4]},
+{label:"Bad Contact %",data:LQ_MO_F.map(d=>d.bc),borderColor:"#8B1A1A",fill:false,tension:0.3,pointRadius:3,borderDash:[2,2]}
 ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{usePointStyle:true,padding:8,font:{size:10}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:45}},y:{beginAtZero:true,max:80,grid:{color:"#f0efed"},ticks:{callback:v=>v+"%",font:{size:9}}}}}});
 
 if(lqChPhone)lqChPhone.destroy();
 lqChPhone=new Chart(document.getElementById("chLqPhone").getContext("2d"),{type:"bar",data:{labels:labels,datasets:[
-{data:LQ_MO.map(d=>d.nph),backgroundColor:LQ_MO.map(d=>d.nph>5?"rgba(255,70,57,0.7)":d.nph>3?"rgba(154,107,0,0.7)":"rgba(44,147,30,0.5)"),borderRadius:3}
+{data:LQ_MO_F.map(d=>d.nph),backgroundColor:LQ_MO_F.map(d=>d.nph>5?"rgba(255,70,57,0.7)":d.nph>3?"rgba(154,107,0,0.7)":"rgba(44,147,30,0.5)"),borderRadius:3}
 ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:45}},y:{beginAtZero:true,grid:{color:"#f0efed"},ticks:{callback:v=>v+"%",font:{size:9}}}}}});
 
 if(lqChLI)lqChLI.destroy();
 lqChLI=new Chart(document.getElementById("chLqSMR").getContext("2d"),{type:"bar",data:{labels:labels,datasets:[
-{data:LQ_MO.map(d=>d.li),backgroundColor:LQ_MO.map(d=>d.li>40?"rgba(255,70,57,0.7)":d.li>25?"rgba(154,107,0,0.7)":"rgba(44,147,30,0.5)"),borderRadius:3}
+{data:LQ_MO_F.map(d=>d.li),backgroundColor:LQ_MO_F.map(d=>d.li>40?"rgba(255,70,57,0.7)":d.li>25?"rgba(154,107,0,0.7)":"rgba(44,147,30,0.5)"),borderRadius:3}
 ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:9},maxRotation:45}},y:{beginAtZero:true,grid:{color:"#f0efed"},ticks:{callback:v=>v+"%",font:{size:9}}}}}});
 
 // Populate month selector (once)
