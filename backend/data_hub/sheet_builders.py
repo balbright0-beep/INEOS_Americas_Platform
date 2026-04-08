@@ -971,7 +971,11 @@ def build_historical_sheet(ws, export_rows, mkt_map):
     for r in export_rows:
         if r['country_code'] not in ('US', 'CA', 'MX'):
             continue
-        body = r.get('body') or 'SVO'
+        # _detect_body returns lowercase ('sw'/'qm'/'svo') — normalize to the
+        # uppercase keys that the body breakdown rows (SW/QM/SVO) expect.
+        body = (r.get('body') or 'SVO').upper()
+        if body not in ('SW', 'QM', 'SVO'):
+            body = 'SVO'
         # Retail — keyed on handover date
         if r.get('ho_date'):
             ym = r['ho_date'].strftime('%Y-%m')
