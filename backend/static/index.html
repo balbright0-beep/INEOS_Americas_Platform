@@ -336,18 +336,31 @@ function AdminDataUpload(){
   const[rebuildProgress,setRebuildProgress]=useState(null);
   const doRebuild=async()=>{
     setRebuildLoading(true);setRebuildResult(null);
-    setRebuildProgress({pct:2,stage:'Starting rebuild',message:'',running:true,log_tail:[]});
+    setRebuildProgress({pct:2,stage:'Starting rebuild',message:'Submitting request...',running:true,log_tail:[]});
     toast('Rebuilding all dashboards from source files... This may take 30-60 seconds.','info');
-    // Poll progress every 700ms while rebuild runs
-    let polling=true;
+    // Poll progress every 600ms. Do NOT stop polling until we've
+    // actually observed running=true at least once — otherwise a poll
+    // that fires before the backend thread has called progress.start()
+    // would return the prior (Idle) state and end the loop prematurely.
+    let polling=true;let sawRunning=false;
     const pollProgress=async()=>{
       while(polling){
         try{
           const h={};if(API.token)h['Authorization']='Bearer '+API.token;
           const pr=await fetch('/api/admin/rebuild-progress',{headers:h});
-          if(pr.ok){const pj=await pr.json();setRebuildProgress(pj);if(!pj.running)break;}
+          if(pr.ok){
+            const pj=await pr.json();
+            if(pj.running){
+              sawRunning=true;
+              setRebuildProgress(pj);
+            }else if(sawRunning){
+              // Rebuild has actually finished
+              setRebuildProgress(pj);break;
+            }
+            // else: still in "pre-start" window, keep polling without clobbering UI
+          }
         }catch(e){/* ignore transient poll errors */}
-        await new Promise(r=>setTimeout(r,700));
+        await new Promise(r=>setTimeout(r,600));
       }
     };
     pollProgress();
