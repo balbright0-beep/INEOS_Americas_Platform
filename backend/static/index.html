@@ -333,7 +333,46 @@ function AdminDataUpload(){
   const pullGA4=async()=>{setGa4Loading(true);setGa4Status(null);try{const r=await API.post('/api/admin/pull-ga4?days=90',{});setGa4Status(r)}catch(e){setGa4Status({error:e.message})}finally{setGa4Loading(false);API.get('/api/admin/data-sources').then(setSources)}};
 
   const[rebuildLoading,setRebuildLoading]=useState(false);const[rebuildResult,setRebuildResult]=useState(null);
-  const doRebuild=async()=>{setRebuildLoading(true);setRebuildResult(null);toast('Rebuilding all dashboards from source files... This may take 30-60 seconds.','info');try{const h={'Content-Type':'application/json'};if(API.token)h['Authorization']='Bearer '+API.token;const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),180000);const resp=await fetch('/api/admin/rebuild-all',{method:'POST',headers:h,body:'{}',signal:controller.signal});clearTimeout(timeout);const text=await resp.text();let r;try{r=JSON.parse(text)}catch(e){throw new Error('Server returned: '+text.substring(0,200));}setRebuildResult(r);if(r.status==='success'){toast(`Dashboard rebuilt! ${r.vehicle_count?.toLocaleString()||0} vehicles processed.`,'success')}else{toast('Error: '+(r.error||'Unknown'),'error')}}catch(e){const msg=e.name==='AbortError'?'Request timed out (3 min). Check /dashboard — it may still be processing.':e.message;setRebuildResult({error:msg});toast('Rebuild failed: '+msg,'error')}finally{setRebuildLoading(false)}};
+  const[rebuildProgress,setRebuildProgress]=useState(null);
+  const doRebuild=async()=>{
+    setRebuildLoading(true);setRebuildResult(null);
+    setRebuildProgress({pct:2,stage:'Starting rebuild',message:'',running:true,log_tail:[]});
+    toast('Rebuilding all dashboards from source files... This may take 30-60 seconds.','info');
+    // Poll progress every 700ms while rebuild runs
+    let polling=true;
+    const pollProgress=async()=>{
+      while(polling){
+        try{
+          const h={};if(API.token)h['Authorization']='Bearer '+API.token;
+          const pr=await fetch('/api/admin/rebuild-progress',{headers:h});
+          if(pr.ok){const pj=await pr.json();setRebuildProgress(pj);if(!pj.running)break;}
+        }catch(e){/* ignore transient poll errors */}
+        await new Promise(r=>setTimeout(r,700));
+      }
+    };
+    pollProgress();
+    try{
+      const h={'Content-Type':'application/json'};
+      if(API.token)h['Authorization']='Bearer '+API.token;
+      const controller=new AbortController();
+      const timeout=setTimeout(()=>controller.abort(),300000);
+      const resp=await fetch('/api/admin/rebuild-all',{method:'POST',headers:h,body:'{}',signal:controller.signal});
+      clearTimeout(timeout);
+      const text=await resp.text();
+      let r;try{r=JSON.parse(text)}catch(e){throw new Error('Server returned: '+text.substring(0,200));}
+      setRebuildResult(r);
+      if(r.status==='success'){toast(`Dashboard rebuilt! ${r.vehicle_count?.toLocaleString()||0} vehicles processed.`,'success')}
+      else{toast('Error: '+(r.error||'Unknown'),'error')}
+    }catch(e){
+      const msg=e.name==='AbortError'?'Request timed out (5 min). Check /dashboard — it may still be processing.':e.message;
+      setRebuildResult({error:msg});toast('Rebuild failed: '+msg,'error');
+    }finally{
+      polling=false;
+      setRebuildLoading(false);
+      // Keep final progress snapshot visible briefly
+      setTimeout(()=>setRebuildProgress(null),4000);
+    }
+  };
 
   const freshColor=(s)=>s==='green'?'#2E7D32':s==='yellow'?'#F9A825':s==='red'?'#C4281D':'#9F9F9F';
   const freshBg=(s)=>s==='green'?'#E8F5E9':s==='yellow'?'#FFF8E1':s==='red'?'#FFEBE9':'#F5F5F5';
@@ -359,16 +398,44 @@ function AdminDataUpload(){
       {masterResult?.error&&<p className="mt-2 text-xs text-red-600">{masterResult.error}</p>}
     </div>
 
-    <div className="rounded-xl p-5 mb-6 flex items-center justify-between" style={{background:'#1A1A2E',borderLeft:'4px solid #FF4639'}}>
-      <div>
-        <span className="font-semibold text-base text-white" style={{fontFamily:'var(--ids-font-heading)'}}>Rebuild All Dashboards</span>
-        <p className="text-xs mt-1" style={{color:'#aaa'}}>Generate the Americas Dashboard from all uploaded source files above. No Master File needed.</p>
-        {rebuildResult&&rebuildResult.status==='success'&&<div className="text-xs text-green-400 mt-1"><p>✓ Dashboard rebuilt — {rebuildResult.vehicle_count?.toLocaleString()||0} vehicles • {rebuildResult.timestamp}</p><p className="text-[10px] opacity-70 mt-0.5">Output: {rebuildResult._debug?.output_size?.toLocaleString()||'?'} bytes | Files: {rebuildResult._debug?.cache_files?.length||0} cached | <a href="/dashboard" target="_blank" className="underline">Open Dashboard ↗</a></p></div>}
-        {rebuildResult&&rebuildResult.error&&<p className="text-xs text-red-400 mt-1">✗ {rebuildResult.error}</p>}
-        {rebuildResult&&!rebuildResult.status&&!rebuildResult.error&&<p className="text-xs text-yellow-400 mt-1">⚠ Unexpected response: {JSON.stringify(rebuildResult).substring(0,200)}</p>}
-        {rebuildResult&&rebuildResult._build_log&&<details className="mt-1"><summary className="text-[10px] text-gray-400 cursor-pointer">Build Log ({rebuildResult._build_log.length.toLocaleString()} chars) | Cached: {rebuildResult._cached_files?.join(', ')||'?'}</summary><pre className="text-[9px] text-gray-400 mt-1 max-h-96 overflow-y-auto whitespace-pre-wrap font-mono" style={{fontSize:'9px',lineHeight:'1.3'}}>{rebuildResult._build_log}</pre></details>}
+    <div className="rounded-xl p-5 mb-6" style={{background:'#1A1A2E',borderLeft:'4px solid #FF4639'}}>
+      <div className="flex items-center justify-between">
+        <div className="flex-1 pr-4">
+          <span className="font-semibold text-base text-white" style={{fontFamily:'var(--ids-font-heading)'}}>Rebuild All Dashboards</span>
+          <p className="text-xs mt-1" style={{color:'#aaa'}}>Generate the Americas Dashboard from all uploaded source files above. No Master File needed.</p>
+          {rebuildResult&&rebuildResult.status==='success'&&<div className="text-xs text-green-400 mt-1"><p>✓ Dashboard rebuilt — {rebuildResult.vehicle_count?.toLocaleString()||0} vehicles • {rebuildResult.timestamp}</p><p className="text-[10px] opacity-70 mt-0.5">Output: {rebuildResult._debug?.output_size?.toLocaleString()||'?'} bytes | Files: {rebuildResult._debug?.cache_files?.length||0} cached | <a href="/dashboard" target="_blank" className="underline">Open Dashboard ↗</a></p></div>}
+          {rebuildResult&&rebuildResult.error&&<p className="text-xs text-red-400 mt-1">✗ {rebuildResult.error}</p>}
+          {rebuildResult&&!rebuildResult.status&&!rebuildResult.error&&<p className="text-xs text-yellow-400 mt-1">⚠ Unexpected response: {JSON.stringify(rebuildResult).substring(0,200)}</p>}
+          {rebuildResult&&rebuildResult._build_log&&<details className="mt-1"><summary className="text-[10px] text-gray-400 cursor-pointer">Build Log ({rebuildResult._build_log.length.toLocaleString()} chars) | Cached: {rebuildResult._cached_files?.join(', ')||'?'}</summary><pre className="text-[9px] text-gray-400 mt-1 max-h-96 overflow-y-auto whitespace-pre-wrap font-mono" style={{fontSize:'9px',lineHeight:'1.3'}}>{rebuildResult._build_log}</pre></details>}
+        </div>
+        <button onClick={doRebuild} disabled={rebuildLoading} className="px-6 py-3 rounded-lg text-sm font-bold text-white disabled:opacity-50 transition-all hover:scale-105" style={{background:'linear-gradient(135deg,#FF4639,#D4342A)',boxShadow:'0 4px 14px rgba(255,70,57,0.4)'}}>{rebuildLoading?'Rebuilding...':'⚡ Rebuild All'}</button>
       </div>
-      <button onClick={doRebuild} disabled={rebuildLoading} className="px-6 py-3 rounded-lg text-sm font-bold text-white disabled:opacity-50 transition-all hover:scale-105" style={{background:'linear-gradient(135deg,#FF4639,#D4342A)',boxShadow:'0 4px 14px rgba(255,70,57,0.4)'}}>{rebuildLoading?'Rebuilding...':'⚡ Rebuild All'}</button>
+      {rebuildProgress&&(rebuildLoading||rebuildProgress.running||rebuildProgress.pct>=100)&&(
+        <div className="mt-4">
+          <div className="flex items-center justify-between text-[11px] mb-1.5">
+            <span className="font-semibold text-white tracking-wide">{rebuildProgress.stage||'Working...'}</span>
+            <span className="font-mono" style={{color:rebuildProgress.error?'#FF7A70':'#9CE8A7'}}>{rebuildProgress.pct||0}%</span>
+          </div>
+          <div className="w-full h-2 rounded-full overflow-hidden" style={{background:'rgba(255,255,255,0.08)'}}>
+            <div className="h-full transition-all duration-500 ease-out" style={{
+              width:`${rebuildProgress.pct||0}%`,
+              background:rebuildProgress.error
+                ?'linear-gradient(90deg,#CC0200,#FF4639)'
+                :(rebuildProgress.pct>=100
+                    ?'linear-gradient(90deg,#2C931E,#4CD137)'
+                    :'linear-gradient(90deg,#FF4639,#FFB347)'),
+              boxShadow:rebuildProgress.error?'0 0 8px rgba(255,70,57,0.6)':'0 0 8px rgba(255,179,71,0.45)',
+            }}/>
+          </div>
+          {rebuildProgress.message&&<p className="text-[10px] mt-1.5" style={{color:'#bbb'}}>{rebuildProgress.message}</p>}
+          {rebuildProgress.log_tail&&rebuildProgress.log_tail.length>0&&(
+            <details className="mt-1.5">
+              <summary className="text-[10px] cursor-pointer" style={{color:'#777'}}>Live log ({rebuildProgress.log_tail.length} lines)</summary>
+              <pre className="text-[9px] mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap font-mono" style={{color:'#888',lineHeight:'1.35'}}>{rebuildProgress.log_tail.slice(-15).join('\n')}</pre>
+            </details>
+          )}
+        </div>
+      )}
     </div>
 
     <h3 className="text-sm font-semibold text-ineos-iron-smoke uppercase tracking-wider mb-3">Individual Source Files</h3>

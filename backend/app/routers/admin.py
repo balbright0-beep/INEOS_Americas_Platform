@@ -488,11 +488,18 @@ async def set_objectives(request: Request, admin=Depends(require_admin), db: Ses
 # --- Rebuild All ---
 @router.post("/rebuild-all")
 async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db)):
-    """Trigger full rebuild of all dashboards from cached source data."""
+    """Trigger full rebuild of all dashboards from cached source data.
+
+    Runs the (blocking) rebuild in a threadpool so the /rebuild-progress
+    poll endpoint can still be served on the same worker while the build
+    is in flight.
+    """
     try:
         import sys, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         from data_hub.orchestrator import DataHub
+        from data_hub import progress as rebuild_progress
+        from fastapi.concurrency import run_in_threadpool
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         hub = DataHub(
             cache_dir=os.path.join(base, 'cache'),
@@ -501,10 +508,22 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
             output_dir=os.path.join(base, 'outputs'),
         )
         import io, contextlib
-        log_buffer = io.StringIO()
-        with contextlib.redirect_stdout(log_buffer):
-            result = hub.rebuild_dashboard()
-        build_log = log_buffer.getvalue()
+
+        def _run():
+            # Tee stdout: capture for build_log AND mirror to progress.log
+            class _Tee(io.StringIO):
+                def write(self, s):
+                    super().write(s)
+                    for line in str(s).splitlines():
+                        if line.strip():
+                            rebuild_progress.log(line)
+                    return len(s)
+            buf = _Tee()
+            with contextlib.redirect_stdout(buf):
+                res = hub.rebuild_dashboard()
+            return res, buf.getvalue()
+
+        result, build_log = await run_in_threadpool(_run)
 
         # Add diagnostic info — full log, no truncation
         result['_build_log'] = build_log
@@ -520,9 +539,33 @@ async def rebuild_all(admin=Depends(require_admin), db: Session = Depends(get_db
         audit(db, "rebuild_all", admin.username, f"Full rebuild: {result.get('vehicle_count',0)} vehicles, output={result['_debug']['output_size']} bytes")
         return result
     except ImportError as e:
+        try:
+            from data_hub import progress as rebuild_progress
+            rebuild_progress.finish(error=f"Data Hub not connected: {e}")
+        except Exception:
+            pass
         return {"status": "error", "error": f"Data Hub not connected: {e}"}
     except Exception as e:
+        try:
+            from data_hub import progress as rebuild_progress
+            rebuild_progress.finish(error=str(e))
+        except Exception:
+            pass
         return {"status": "error", "error": str(e)}
+
+
+# --- Rebuild Progress Poll ---
+@router.get("/rebuild-progress")
+async def rebuild_progress_get(admin=Depends(require_admin)):
+    """Return current rebuild progress so the frontend can render a live
+    progress bar while POST /rebuild-all is still in flight."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        from data_hub import progress as rebuild_progress
+        return rebuild_progress.snapshot()
+    except Exception as e:
+        return {"running": False, "pct": 0, "stage": "Unavailable", "error": str(e)}
 
 
 # --- GA4 API Pull ---

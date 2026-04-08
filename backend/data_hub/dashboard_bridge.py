@@ -344,6 +344,7 @@ def generate_dashboard_from_sources(cache_dir, template_path, output_path):
         dict with status, output_path, file_size, vehicle_count, timestamp
     """
     from data_hub.master_assembler import assemble_master_xlsx
+    from data_hub import progress as rebuild_progress
 
     print("\n" + "=" * 60)
     print("DASHBOARD GENERATION FROM SOURCE FILES")
@@ -351,12 +352,19 @@ def generate_dashboard_from_sources(cache_dir, template_path, output_path):
 
     # Step 1: Assemble xlsx from cached parquet files
     print("\nStep 1: Assembling workbook from source data...")
+    rebuild_progress.set_stage(35, "Building master workbook", "Writing sheets from source data")
     xlsx_path = assemble_master_xlsx(cache_dir, template_path=template_path)
+    rebuild_progress.log("Master workbook assembled")
 
     try:
         # Step 2: Run the original processor against the assembled xlsx
         print("\nStep 2: Running Dashboard processor...")
+        rebuild_progress.set_stage(
+            60, "Generating dashboard HTML",
+            "Running processor: KPIs, charts, and 35+ dashboard constants",
+        )
         result = run_processor_on_xlsx(xlsx_path, template_path, output_path)
+        rebuild_progress.log("Processor finished")
 
         # Count vehicles for reporting
         import pandas as pd
@@ -367,13 +375,19 @@ def generate_dashboard_from_sources(cache_dir, template_path, output_path):
 
         # Step 3: Post-process HTML to inject additional constants
         # (Lead Quality, etc. that the processor doesn't compute)
+        rebuild_progress.set_stage(
+            90, "Post-processing",
+            "Injecting Lead Quality, CVP, and auxiliary constants",
+        )
         try:
             _post_process_html(output_path, cache_dir)
         except Exception as e:
             print(f"  Post-process warning: {e}")
+            rebuild_progress.log(f"Post-process warning: {e}")
 
         result['vehicle_count'] = vehicle_count
         print(f"\n[Bridge] Complete! {vehicle_count} vehicles processed.")
+        rebuild_progress.log(f"Complete: {vehicle_count} vehicles")
         return result
 
     finally:

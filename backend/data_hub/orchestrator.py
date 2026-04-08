@@ -10,6 +10,7 @@ import json
 from datetime import datetime
 
 from data_hub.file_router import detect_file_type, SOURCE_INFO
+from data_hub import progress as rebuild_progress
 from data_hub.ingest.sap_export import ingest_sap_export
 from data_hub.ingest.sap_handover import ingest_handover
 from data_hub.ingest.stock_pipeline import ingest_stock_pipeline
@@ -385,6 +386,9 @@ class DataHub:
     def rebuild_dashboard(self):
         """Full dashboard rebuild from uploaded source files.
 
+        Reports progress via data_hub.progress so the frontend can poll
+        /api/admin/rebuild-progress for a live progress bar.
+
         Uses the Bridge approach:
         1. Restores any missing cached files from PostgreSQL
         2. Assembles a temporary xlsx from cached source DataFrames
@@ -394,43 +398,61 @@ class DataHub:
         This eliminates the need for the Master File — individual source
         uploads produce the same output as the original workflow.
         """
-        # Restore cached files from DB AND force re-ingest from raw bytes,
-        # so any ingest logic updates (e.g. CVP code matching) take effect
-        # without requiring the user to manually re-upload every source.
-        restored = self.restore_all_from_db(force_reingest=True)
-        if restored:
-            print(f"  Restored/re-ingested {restored} cached files from PostgreSQL")
-
-        # Verify minimum data exists
-        if not self._has_data('sap_export'):
-            return {'error': 'SAP Export not uploaded yet. Upload at least the SAP Vehicle Export to rebuild.'}
-
-        if not os.path.exists(self.template_path):
-            return {'error': f'Dashboard template not found at {self.template_path}'}
-
-        output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
-
+        rebuild_progress.start()
         try:
-            from data_hub.dashboard_bridge import generate_dashboard_from_sources
+            # Restore cached files from DB AND force re-ingest from raw bytes,
+            # so any ingest logic updates (e.g. CVP code matching) take effect
+            # without requiring the user to manually re-upload every source.
+            rebuild_progress.set_stage(5, "Restoring cached files", "Loading raw uploads from PostgreSQL")
+            restored = self.restore_all_from_db(force_reingest=True)
+            if restored:
+                print(f"  Restored/re-ingested {restored} cached files from PostgreSQL")
+                rebuild_progress.log(f"Restored {restored} cached files from PostgreSQL")
 
-            # List what files are available before building
-            data_dir = os.path.join(self.cache_dir, 'data')
-            available = os.listdir(data_dir) if os.path.isdir(data_dir) else []
-            print(f"  Available cached files: {available}")
+            # Verify minimum data exists
+            if not self._has_data('sap_export'):
+                msg = 'SAP Export not uploaded yet. Upload at least the SAP Vehicle Export to rebuild.'
+                rebuild_progress.finish(error=msg)
+                return {'error': msg}
 
-            result = generate_dashboard_from_sources(
-                cache_dir=self.cache_dir,
-                template_path=self.template_path,
-                output_path=output_html,
-            )
+            if not os.path.exists(self.template_path):
+                msg = f'Dashboard template not found at {self.template_path}'
+                rebuild_progress.finish(error=msg)
+                return {'error': msg}
 
-            result['_cached_files'] = available
-            return result
+            output_html = os.path.join(self.output_dir, 'Americas_Daily_Dashboard.html')
 
+            try:
+                from data_hub.dashboard_bridge import generate_dashboard_from_sources
+
+                # List what files are available before building
+                data_dir = os.path.join(self.cache_dir, 'data')
+                available = os.listdir(data_dir) if os.path.isdir(data_dir) else []
+                print(f"  Available cached files: {available}")
+                rebuild_progress.set_stage(
+                    25, "Assembling workbook",
+                    f"Merging {len(available)} source files into master workbook",
+                )
+
+                result = generate_dashboard_from_sources(
+                    cache_dir=self.cache_dir,
+                    template_path=self.template_path,
+                    output_path=output_html,
+                )
+
+                result['_cached_files'] = available
+                rebuild_progress.set_stage(100, "Complete", "Dashboard ready")
+                rebuild_progress.finish()
+                return result
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                rebuild_progress.finish(error=str(e))
+                return {'status': 'error', 'error': str(e)}
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return {'status': 'error', 'error': str(e)}
+            rebuild_progress.finish(error=str(e))
+            raise
 
     def _update_platform_db(self):
         """Update the Platform's SQLAlchemy vehicle database from cached source data.
