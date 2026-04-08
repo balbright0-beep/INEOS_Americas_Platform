@@ -15,22 +15,21 @@ from app.seed import seed_database
 from app.routers import auth, admin, bulletins, links, data
 
 
-def _hydrate_dashboard_on_startup():
-    """Re-hydrate the ephemeral cache and regenerate the dashboard HTML.
+def _restore_cache_on_startup():
+    """Restore source parquets from PostgreSQL — DO NOT rebuild the dashboard.
 
-    Render's filesystem is wiped on every deploy / container restart, so the
-    refreshed dashboard at backend/outputs/Americas_Daily_Dashboard.html and
-    every parquet under backend/cache/data/ disappear. Source data lives on
-    in PostgreSQL via the CachedFile table, but nothing was rebuilding the
-    dashboard after a restart — so users saw the bare template (no recent
-    uploads) every time we deployed.
+    Render's container filesystem is wiped on every deploy, so the parquets
+    under backend/cache/data/ disappear. We restore them from the CachedFile
+    table so the next manual rebuild has the latest uploaded sources to
+    work with.
 
-    On startup we:
-      1. Restore all cached source parquet/json files from the DB to disk.
-      2. If at least sap_export is present, regenerate the dashboard HTML.
-
-    Failures here are non-fatal — the app still starts and serves the
-    template fallback, but we log everything so it's visible in render logs.
+    IMPORTANT: We intentionally DO NOT auto-call rebuild_dashboard() here.
+    The rebuild path through master_assembler+processor_original is currently
+    producing inflated MTD totals (~400 vs the correct 29) compared to the
+    upload-time generation, and auto-running it on every deploy was
+    overwriting the user's known-good dashboard with the bad rebuild.
+    Until the rebuild discrepancy is fixed, only manual rebuilds should
+    be allowed to write Americas_Daily_Dashboard.html.
     """
     try:
         import sys
@@ -47,27 +46,10 @@ def _hydrate_dashboard_on_startup():
             output_dir=os.path.join(backend_dir, 'outputs'),
         )
 
-        output_path = os.path.join(backend_dir, 'outputs', 'Americas_Daily_Dashboard.html')
-        if os.path.exists(output_path):
-            print(f"[startup] Dashboard already present at {output_path}")
-            return
-
-        print("[startup] No dashboard output on disk — restoring cache from DB and rebuilding...")
         restored = hub.restore_all_from_db()
-        print(f"[startup] Restored {restored} cached files from DB")
-
-        if not hub._has_data('sap_export'):
-            print("[startup] No SAP export in DB cache — skipping rebuild (upload required)")
-            return
-
-        result = hub.rebuild_dashboard()
-        if isinstance(result, dict) and result.get('error'):
-            print(f"[startup] Rebuild error: {result['error']}")
-        else:
-            size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-            print(f"[startup] Dashboard rebuilt: {size:,} bytes")
+        print(f"[startup] Restored {restored} cached files from DB (no rebuild)")
     except Exception as e:
-        print(f"[startup] Hydration failed (non-fatal): {e}")
+        print(f"[startup] Cache restore failed (non-fatal): {e}")
         import traceback
         traceback.print_exc()
 
@@ -80,9 +62,9 @@ async def lifespan(app: FastAPI):
         seed_database(db)
     finally:
         db.close()
-    # Re-hydrate dashboard from DB-persisted source files. Render's disk
-    # is ephemeral so this is the only way recent uploads survive a deploy.
-    _hydrate_dashboard_on_startup()
+    # Restore cached source files from DB. Does NOT auto-rebuild the
+    # dashboard — see _restore_cache_on_startup for why.
+    _restore_cache_on_startup()
     yield
 
 
@@ -214,19 +196,6 @@ def _inject_margaret_key(html: str) -> str:
 async def serve_dashboard():
     """Serve the latest generated Americas Dashboard."""
     dash_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs', 'Americas_Daily_Dashboard.html')
-    if os.path.exists(dash_path):
-        with open(dash_path, 'r', encoding='utf-8') as f:
-            return HTMLResponse(content=_inject_margaret_key(f.read()))
-
-    # Output missing — last-ditch lazy hydration. This catches the case where
-    # startup hydration was skipped or failed but the DB still has source
-    # data we can rebuild from. It's slow on first hit (~30-60s) but every
-    # subsequent request will hit the cached output above.
-    print("[serve_dashboard] Output missing — attempting lazy rebuild from DB cache...")
-    try:
-        _hydrate_dashboard_on_startup()
-    except Exception as e:
-        print(f"[serve_dashboard] Lazy rebuild failed: {e}")
     if os.path.exists(dash_path):
         with open(dash_path, 'r', encoding='utf-8') as f:
             return HTMLResponse(content=_inject_margaret_key(f.read()))
