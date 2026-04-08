@@ -123,7 +123,7 @@ function InternalHub({user}){
   return <div className="ids-layout" style={{minHeight:'100vh'}}>
     <aside className="ids-sidebar">
       <div className="ids-sidebar-header">
-        <div className="ids-sidebar-logo">IN</div>
+        <img src="/ineos-mark.svg" alt="INEOS" className="ids-sidebar-logo" style={{width:'40px',height:'40px',padding:0,background:'transparent'}}/>
         <div><div className="ids-sidebar-brand">INEOS Americas</div><div className="ids-sidebar-sub">Internal Hub</div></div>
       </div>
       <button className="ids-cmd-trigger" onClick={()=>setCmdOpen(true)}><span>Search...</span><kbd>⌘K</kbd></button>
@@ -294,18 +294,30 @@ function AdminDataUpload(){
   const uploadMaster=async()=>{if(!masterFile)return;setMasterLoading(true);setMasterResult(null);try{const r=await API.uploadFile('/api/admin/upload-master',masterFile);setMasterResult(r);if(r.timestamp)setLastMaster(r.timestamp);toast('Master File uploaded and Dashboard synced!','success')}catch(e){setMasterResult({error:e.message});toast('Upload failed','error')}finally{setMasterLoading(false)}};
 
   const CARDS=[
-    {id:'sap_export',label:'SAP Vehicle Export',desc:'Daily vehicle data export from SAP (~21K rows, 50 cols). Primary vehicle data source.',cadence:'Daily',accept:'.xlsx',color:'#FF4639'},
-    {id:'sap_handover',label:'SAP Handover Report',desc:'Handover dates, revenue recognition, retail dates. Indexed by VIN.',cadence:'Daily',accept:'.xlsx',color:'#C75B39'},
-    {id:'stock_pipeline',label:'Stock & Pipeline Report',desc:'Vessel ETAs, shipping data, pipeline positions. Replaces VESSEL ETA sheet.',cadence:'Daily',accept:'.xlsx,.xlsb',color:'#F9A825'},
-    {id:'c4c_leads',label:'C4C Leads (Marketing)',desc:'Lead data from C4C — brand leads, test drives, retailer status.',cadence:'Daily',accept:'.xlsx',color:'#7B5EA7'},
-    {id:'santander',label:'Santander Apps (All)',desc:'Combined finance & lease application volume. Product filter: (All).',cadence:'Daily',accept:'.xlsx',color:'#00897B'},
-    {id:'santander_finance',label:'Santander Apps (Retail)',desc:'Finance/Retail applications only. Download with Product filter = Retail.',cadence:'Daily',accept:'.xlsx',color:'#00897B'},
-    {id:'santander_lease',label:'Santander Apps (Lease)',desc:'Lease applications only. Download with Product filter = Lease.',cadence:'Daily',accept:'.xlsx',color:'#00897B'},
-    {id:'sales_order',label:'Sales Order Report',desc:'Bill-to-Dealer data for true retail attribution. Cross-references with Handover.',cadence:'Daily',accept:'.xlsx',color:'#43A047'},
-    {id:'qm_leads',label:'QM Leads (ALL LEADS)',desc:'Quartermaster lead list — cross-referenced with C4C to split SW vs QM volume.',cadence:'Daily',accept:'.xlsx',color:'#E91E63'},
-    {id:'incentive_spend',label:'Incentive & Subvention Spend',desc:'Variable spend by VIN — incentive and subvention amounts for MSRP-less-VIE calculation.',cadence:'Monthly',accept:'.xlsx',color:'#FF6F00'},
-    {id:'campaign_codes',label:'Campaign Code Extract',desc:'Campaign codes by VIN — determines CVP, Demo flags. Critical for dashboard counting and Incentive Dashboard.',cadence:'Monthly',accept:'.xlsx',color:'#AD1457'},
-    {id:'urban_science',label:'Urban Science Extract',desc:'Customer geography data — city, state, ZIP for distance analysis.',cadence:'Monthly',accept:'.xlsx',color:'#5C6BC0'},
+    {id:'sap_export',label:'SAP Vehicle Export',desc:'Daily vehicle data export from SAP (~21K rows, 50 cols). Primary vehicle data source.',cadence:'Daily',accept:'.xlsx',color:'#FF4639',
+      link:'https://app.powerbi.com/groups/me/reports/5aa4ec89-b27a-4fd4-bd94-e877cf5b2d1f/f63a2b842ecaaee6b391?ctid=ffea6392-44ee-4085-a734-3de7fd366620&openReportSource=ReportInvitation&experience=power-bi',linkLabel:'Open in Power BI'},
+    {id:'sap_handover',label:'SAP Handover Report',desc:'Handover dates, revenue recognition, retail dates. Indexed by VIN.',cadence:'Daily',accept:'.xlsx',color:'#C75B39',
+      link:'https://app.powerbi.com/groups/me/reports/5aa4ec89-b27a-4fd4-bd94-e877cf5b2d1f/1ea777bad2f9e863ddc1?ctid=ffea6392-44ee-4085-a734-3de7fd366620&openReportSource=ReportInvitation&experience=power-bi',linkLabel:'Open in Power BI'},
+    {id:'stock_pipeline',label:'Stock & Pipeline Report',desc:'Vessel ETAs, shipping data, pipeline positions. Source: weekly email from UK team.',cadence:'Weekly',accept:'.xlsx,.xlsb',color:'#F9A825',
+      link:null,linkLabel:'Email from UK team'},
+    {id:'c4c_leads',label:'C4C Leads (Marketing)',desc:'Lead data from C4C — brand leads, test drives, retailer status.',cadence:'Daily',accept:'.xlsx',color:'#7B5EA7',
+      link:'https://my359672-sso.crm.ondemand.com/sap/ap/ui/repository/SAP_UI/HTML5/newclient.html?app.component=/SAP_UI_CT/Main/root.uiccwoc&rootWindow=X&redirectUrl=/sap/byd/runtime#Nav/1/eyJiSXNTaG93bkFzV29jVmlldyI6dHJ1ZSwidGFyZ2V0IjoiL0JZRF9DT0QvU2FsZXNPbkRlbWFuZC9NYXJrZXRpbmcvUHJvc3BlY3QvQ09EX01rdF9Qcm9zcGVjdC5XQ1ZJRVcudWl3b2N2aWV3Iiwid2luSWQiOiIzMThhMGJlYmI1ZGE5MDYxNzA2MDJhZGQxMjExODc4NyJ9',linkLabel:'Open in C4C'},
+    {id:'santander',label:'Santander Apps (All)',desc:'Combined finance & lease application volume. Product filter: (All).',cadence:'Daily',accept:'.xlsx',color:'#00897B',
+      link:null,linkLabel:'Source: Santander portal'},
+    {id:'santander_finance',label:'Santander Apps (Retail)',desc:'Finance/Retail applications only. Download with Product filter = Retail.',cadence:'Daily',accept:'.xlsx',color:'#00897B',
+      link:null,linkLabel:'Source: Santander portal (Retail filter)'},
+    {id:'santander_lease',label:'Santander Apps (Lease)',desc:'Lease applications only. Download with Product filter = Lease.',cadence:'Daily',accept:'.xlsx',color:'#00897B',
+      link:null,linkLabel:'Source: Santander portal (Lease filter)'},
+    {id:'sales_order',label:'Sales Order Report',desc:'Bill-to-Dealer data for true retail attribution. Cross-references with Handover.',cadence:'Daily',accept:'.xlsx',color:'#43A047',
+      link:'https://my359672-sso.crm.ondemand.com/sap/ap/ui/repository/SAP_UI/HTML5/newclient.html?app.component=/SAP_UI_CT/Main/root.uiccwoc&rootWindow=X&redirectUrl=/sap/byd/runtime#Nav/1/eyJiSXNTaG93bkFzV29jVmlldyI6dHJ1ZSwidGFyZ2V0IjoiL0JZRF9DT0QvU2FsZXNPbkRlbWFuZC9TYWxlc09yZGVyL1VJL0NPRF9TQUxFU09SREVSX1dDVklFVy5XQ1ZJRVcudWl3b2N2aWV3Iiwid2luSWQiOiJjYTBiNWIyMDBmY2VhNGEwMmI2NTdhNTRlNDRkZmZmZSJ9',linkLabel:'Open in C4C'},
+    {id:'qm_leads',label:'QM Leads (ALL LEADS)',desc:'Quartermaster lead list — filter to QM only and choose dates Jan 25 to current.',cadence:'Daily',accept:'.xlsx',color:'#E91E63',
+      link:'https://app.powerbi.com/groups/me/reports/8ec0537a-78cc-4c2d-a160-64a8fd0b6827/020ace15d3586e14a371?ctid=ffea6392-44ee-4085-a734-3de7fd366620&experience=power-bi',linkLabel:'Open in Power BI'},
+    {id:'incentive_spend',label:'Incentive & Subvention Spend',desc:'Variable spend by VIN — incentive and subvention amounts for MSRP-less-VIE calculation.',cadence:'Monthly',accept:'.xlsx',color:'#FF6F00',
+      link:null,linkLabel:'Source: finance team'},
+    {id:'campaign_codes',label:'Campaign Code Extract',desc:'Campaign codes by VIN — determines CVP (USCVP/CACVP/MXCVP), Demo flags. Critical for dashboard counting and Incentive Dashboard.',cadence:'Monthly',accept:'.xlsx',color:'#AD1457',
+      link:null,linkLabel:'Source: SAP campaign extract'},
+    {id:'urban_science',label:'Urban Science Extract',desc:'Customer geography data — city, state, ZIP for distance analysis.',cadence:'Monthly',accept:'.xlsx',color:'#5C6BC0',
+      link:'https://app.powerbi.com/groups/me/reports/5aa4ec89-b27a-4fd4-bd94-e877cf5b2d1f/db2dca915dbe50e3ad57?ctid=ffea6392-44ee-4085-a734-3de7fd366620&openReportSource=ReportInvitation&experience=power-bi',linkLabel:'Open in Power BI'},
   ];
 
   const uploadFile=async(sourceId,file)=>{
@@ -371,6 +383,8 @@ function AdminDataUpload(){
             <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{background:'rgba(255,255,255,0.7)',color:'var(--ids-text-tertiary)'}}>{card.cadence}</span>
           </div>
           <p className="text-[11px] text-ineos-iron-smoke mb-2">{card.desc}</p>
+          {card.link&&<a href={card.link} target="_blank" rel="noopener noreferrer" className="text-[10px] font-semibold uppercase tracking-wider mb-2 inline-flex items-center gap-1" style={{color:card.color}}>↗ {card.linkLabel||'Open source'}</a>}
+          {!card.link&&card.linkLabel&&<p className="text-[10px] italic mb-2" style={{color:'var(--ids-text-tertiary)'}}>{card.linkLabel}</p>}
           {s.last_upload&&<p className="text-[11px] mb-1" style={{color:freshColor(fresh)}}>Updated: {new Date(s.last_upload).toLocaleString()} &middot; {s.row_count?.toLocaleString()||0} rows</p>}
           {!s.last_upload&&<p className="text-[11px] text-ineos-silver-dust mb-1">Never uploaded</p>}
           <div className="mt-2">
@@ -445,7 +459,7 @@ function DealerHub({user}){
 
   return <div className="min-h-screen flex bg-ineos-mushroom-light">
     <aside className="w-56 bg-ineos-charcoal text-white flex flex-col shrink-0 h-screen sticky top-0">
-      <div className="p-4 border-b border-white/10"><div className="flex items-center gap-2"><div className="w-8 h-8 bg-ineos-red rounded flex items-center justify-center text-xs font-bold">IN</div><div><div className="text-sm font-semibold">Dealer Portal</div><div className="text-[10px] text-ineos-silver-dust uppercase tracking-wider">{user.dealer_name||'INEOS'}</div></div></div></div>
+      <div className="p-4 border-b border-white/10"><div className="flex items-center gap-2"><img src="/ineos-mark.svg" alt="INEOS" className="w-8 h-8"/><div><div className="text-sm font-semibold">Dealer Portal</div><div className="text-[10px] text-ineos-silver-dust uppercase tracking-wider">{user.dealer_name||'INEOS'}</div></div></div></div>
       <nav className="flex-1 p-3 space-y-1">{nav.map(([k,l])=><button key={k} onClick={()=>setPage(k)} className={`w-full text-left text-sm px-3 py-2 rounded-lg transition ${page===k?'bg-white/10 text-white font-medium':'text-ineos-silver-dust hover:text-white hover:bg-white/5'}`}>{l}</button>)}</nav>
       <div className="p-3 border-t border-white/10"><button onClick={()=>API.logout()} className="text-xs text-ineos-silver-dust hover:text-white">Sign Out</button></div>
     </aside>

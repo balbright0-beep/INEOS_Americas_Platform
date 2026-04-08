@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="INEOS">
+  <rect width="64" height="64" rx="6" fill="#0E0E0E"/>
+  <text x="32" y="42" text-anchor="middle" font-family="'Arial Black','Helvetica Neue',Impact,sans-serif" font-weight="900" font-size="22" fill="#fff" letter-spacing="1">IN</text>
+  <circle cx="42" cy="36" r="3.2" fill="#FF4639"/>
+</svg>

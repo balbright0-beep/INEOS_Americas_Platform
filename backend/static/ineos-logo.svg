@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 120" role="img" aria-label="INEOS GRENADIER">
+  <style>
+    .wm { font-family: 'Arial Black', 'Helvetica Neue', Impact, sans-serif; font-weight: 900; letter-spacing: 0.06em; }
+  </style>
+  <text x="0" y="92" class="wm" font-size="110" fill="#0E0E0E">INEOS</text>
+  <text x="305" y="92" class="wm" font-size="110" fill="#0E0E0E">GRENADIER</text>
+  <!-- accent dot inside the O of INEOS to echo the brand mark -->
+  <circle cx="222" cy="62" r="11" fill="#FF4639"/>
+</svg>
