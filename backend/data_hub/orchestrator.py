@@ -203,7 +203,12 @@ class DataHub:
                     # for a forced re-ingest (rebuild flow)
                     is_corrupt = len(cf.data) < 1000 and cf.row_count > 10
 
-                    if is_corrupt or force_reingest:
+                    # GA4 data is fetched directly from the API (no raw file
+                    # exists), so skip the re-ingest path entirely for ga4_*
+                    # keys and go straight to the normal restore.
+                    is_ga4 = key.startswith('ga4_')
+
+                    if (is_corrupt or force_reingest) and not is_ga4:
                         # Try raw file + re-ingest
                         raw_key = f'{key}_raw'
                         raw_cf = cached_files.get(raw_key)

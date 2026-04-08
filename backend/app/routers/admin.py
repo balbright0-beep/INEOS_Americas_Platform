@@ -602,6 +602,38 @@ async def pull_ga4(days: int = 0, admin=Depends(require_admin), db: Session = De
         cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
         os.makedirs(cache_dir, exist_ok=True)
         meta = save_reports_to_cache(results, cache_dir)
+
+        # CRITICAL: persist each GA4 parquet to PostgreSQL so data survives
+        # Render deploys. Without this, GA4 data lives only on the ephemeral
+        # filesystem and is wiped on every restart, causing "NO DATA in cache"
+        # during subsequent rebuilds.
+        try:
+            from app.models import CachedFile
+            import pandas as _pd
+            persisted = 0
+            for name, result in results.items():
+                if not result.get('data'):
+                    continue
+                key = f'ga4_{name}'
+                parquet_path = os.path.join(cache_dir, 'data', f'{key}.parquet')
+                if not os.path.exists(parquet_path):
+                    continue
+                with open(parquet_path, 'rb') as f:
+                    pbytes = f.read()
+                row_count = int(result.get('row_count') or 0)
+                existing = db.query(CachedFile).filter(CachedFile.key == key).first()
+                if existing:
+                    existing.data = pbytes
+                    existing.row_count = row_count
+                    existing.uploaded_at = datetime.utcnow()
+                else:
+                    db.add(CachedFile(key=key, data=pbytes, row_count=row_count))
+                persisted += 1
+            db.commit()
+            print(f"  [pull_ga4] persisted {persisted} GA4 reports to DB")
+        except Exception as persist_err:
+            print(f"  [pull_ga4] DB persistence warning: {persist_err}")
+
         # Store last GA4 pull timestamp
         total_rows = sum(v.get('row_count', 0) for v in meta.values())
         # Update last pull timestamp
