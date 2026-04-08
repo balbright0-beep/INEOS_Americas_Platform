@@ -15,6 +15,63 @@ from app.seed import seed_database
 from app.routers import auth, admin, bulletins, links, data
 
 
+def _hydrate_dashboard_on_startup():
+    """Re-hydrate the ephemeral cache and regenerate the dashboard HTML.
+
+    Render's filesystem is wiped on every deploy / container restart, so the
+    refreshed dashboard at backend/outputs/Americas_Daily_Dashboard.html and
+    every parquet under backend/cache/data/ disappear. Source data lives on
+    in PostgreSQL via the CachedFile table, but nothing was rebuilding the
+    dashboard after a restart — so users saw the bare template (no recent
+    uploads) every time we deployed.
+
+    On startup we:
+      1. Restore all cached source parquet/json files from the DB to disk.
+      2. If at least sap_export is present, regenerate the dashboard HTML.
+
+    Failures here are non-fatal — the app still starts and serves the
+    template fallback, but we log everything so it's visible in render logs.
+    """
+    try:
+        import sys
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+
+        from data_hub.orchestrator import DataHub
+
+        hub = DataHub(
+            cache_dir=os.path.join(backend_dir, 'cache'),
+            ref_db_path=os.path.join(backend_dir, 'reference', 'reference.db'),
+            template_path=os.path.join(backend_dir, 'templates', 'dashboard_template.html'),
+            output_dir=os.path.join(backend_dir, 'outputs'),
+        )
+
+        output_path = os.path.join(backend_dir, 'outputs', 'Americas_Daily_Dashboard.html')
+        if os.path.exists(output_path):
+            print(f"[startup] Dashboard already present at {output_path}")
+            return
+
+        print("[startup] No dashboard output on disk — restoring cache from DB and rebuilding...")
+        restored = hub.restore_all_from_db()
+        print(f"[startup] Restored {restored} cached files from DB")
+
+        if not hub._has_data('sap_export'):
+            print("[startup] No SAP export in DB cache — skipping rebuild (upload required)")
+            return
+
+        result = hub.rebuild_dashboard()
+        if isinstance(result, dict) and result.get('error'):
+            print(f"[startup] Rebuild error: {result['error']}")
+        else:
+            size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+            print(f"[startup] Dashboard rebuilt: {size:,} bytes")
+    except Exception as e:
+        print(f"[startup] Hydration failed (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -23,6 +80,9 @@ async def lifespan(app: FastAPI):
         seed_database(db)
     finally:
         db.close()
+    # Re-hydrate dashboard from DB-persisted source files. Render's disk
+    # is ephemeral so this is the only way recent uploads survive a deploy.
+    _hydrate_dashboard_on_startup()
     yield
 
 
@@ -157,6 +217,20 @@ async def serve_dashboard():
     if os.path.exists(dash_path):
         with open(dash_path, 'r', encoding='utf-8') as f:
             return HTMLResponse(content=_inject_margaret_key(f.read()))
+
+    # Output missing — last-ditch lazy hydration. This catches the case where
+    # startup hydration was skipped or failed but the DB still has source
+    # data we can rebuild from. It's slow on first hit (~30-60s) but every
+    # subsequent request will hit the cached output above.
+    print("[serve_dashboard] Output missing — attempting lazy rebuild from DB cache...")
+    try:
+        _hydrate_dashboard_on_startup()
+    except Exception as e:
+        print(f"[serve_dashboard] Lazy rebuild failed: {e}")
+    if os.path.exists(dash_path):
+        with open(dash_path, 'r', encoding='utf-8') as f:
+            return HTMLResponse(content=_inject_margaret_key(f.read()))
+
     # Fallback: try serving the template directly
     tmpl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates', 'dashboard_template.html')
     if os.path.exists(tmpl_path):
