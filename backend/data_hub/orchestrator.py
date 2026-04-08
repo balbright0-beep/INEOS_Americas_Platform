@@ -125,11 +125,16 @@ class DataHub:
             print(f"  DB restore error for {key}: {e}")
         return False
 
-    def restore_all_from_db(self):
+    def restore_all_from_db(self, force_reingest=False):
         """Restore all cached files from PostgreSQL to disk.
 
         Strategy: For each source, try processed parquet first. If it's
         corrupt (< 1KB for large datasets), fall back to raw file + re-ingest.
+
+        If `force_reingest=True`, re-ingest every source from its raw bytes
+        regardless of parquet validity. This is used by `rebuild_dashboard`
+        to guarantee that any ingest logic updates (e.g. CVP code matching)
+        take effect on the next rebuild without the user re-uploading.
         """
         INGEST_MAP = {
             'sap_export': ('data_hub.ingest.sap_export', 'ingest_sap_export'),
@@ -193,15 +198,17 @@ class DataHub:
                         count += 1
                         continue
 
-                    # Check if processed parquet is corrupt
+                    # Check if processed parquet is corrupt OR if caller asked
+                    # for a forced re-ingest (rebuild flow)
                     is_corrupt = len(cf.data) < 1000 and cf.row_count > 10
 
-                    if is_corrupt:
+                    if is_corrupt or force_reingest:
                         # Try raw file + re-ingest
                         raw_key = f'{key}_raw'
                         raw_cf = cached_files.get(raw_key)
                         if raw_cf and raw_cf.data and len(raw_cf.data) > 1000:
-                            print(f"  {key}: parquet corrupt ({len(cf.data)} bytes), re-ingesting from raw file ({len(raw_cf.data):,} bytes)...")
+                            reason = "force re-ingest" if force_reingest and not is_corrupt else f"parquet corrupt ({len(cf.data)} bytes)"
+                            print(f"  {key}: {reason}, re-ingesting from raw file ({len(raw_cf.data):,} bytes)...")
                             try:
                                 import tempfile
                                 suffix = os.path.splitext(raw_cf.filename or '.xlsx')[1]
@@ -387,10 +394,12 @@ class DataHub:
         This eliminates the need for the Master File — individual source
         uploads produce the same output as the original workflow.
         """
-        # Restore cached files from DB if disk was wiped (Render deploys)
-        restored = self.restore_all_from_db()
+        # Restore cached files from DB AND force re-ingest from raw bytes,
+        # so any ingest logic updates (e.g. CVP code matching) take effect
+        # without requiring the user to manually re-upload every source.
+        restored = self.restore_all_from_db(force_reingest=True)
         if restored:
-            print(f"  Restored {restored} cached files from PostgreSQL")
+            print(f"  Restored/re-ingested {restored} cached files from PostgreSQL")
 
         # Verify minimum data exists
         if not self._has_data('sap_export'):
