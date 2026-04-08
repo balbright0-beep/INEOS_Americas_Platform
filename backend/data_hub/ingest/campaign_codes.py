@@ -110,13 +110,27 @@ def _parse_xlsx_raw(filepath):
 
 
 def _process(df):
-    """Normalize Campaign Codes DataFrame."""
+    """Normalize Campaign Codes DataFrame.
+
+    The SAP Campaign Code Extract has TWO columns that look the same:
+      - "Campaign Code Applied?" → YES / NO flag
+      - "Campaign Code"          → actual code text e.g. USCVP / CACVP / MXDEMO
+
+    Older versions of this loader collapsed both into one column and lost
+    the actual code text, which made YTD CVP read zero across the board.
+    We now keep them separate and classify CVP rows by matching the actual
+    code text against USCVP / CACVP / MXCVP (and DEMO variants).
+    """
     rename = {}
-    # Priority order: most specific patterns first
+    # Priority order: most specific patterns FIRST (so "Applied?" wins
+    # over plain "Campaign Code"). After matching, the same target name
+    # cannot be reused.
     col_patterns = [
         ('Vehicle VIN', 'vin'),
-        ('Campaign code', 'campaign_code'),
+        ('Campaign Code Applied', 'campaign_flag'),
+        ('Campaign code applied', 'campaign_flag'),
         ('Campaign Code', 'campaign_code'),
+        ('Campaign code', 'campaign_code'),
         ('SO Sales Order', 'order_no'),
         ('SO Channel', 'channel'),
         ('Country Name', 'country'),
@@ -128,30 +142,38 @@ def _process(df):
         ('Region Group', 'region'),
     ]
     for actual_col in df.columns:
+        col_lower = str(actual_col).lower()
         for pattern, internal in col_patterns:
-            if pattern.lower() in str(actual_col).lower():
+            if pattern.lower() in col_lower:
                 if internal not in rename.values():
                     rename[actual_col] = internal
                     break
     df = df.rename(columns=rename)
 
-    # Determine campaign type from the "Campaign code applied?" column
-    if 'campaign_code' in df.columns:
-        # The campaign_code column contains values like "YES", "NO", "BLANK"
-        # This indicates whether a campaign code was applied
-        df['has_campaign'] = df['campaign_code'].astype(str).str.upper().isin(['YES', 'TRUE', '1'])
+    # has_campaign flag from the YES/NO column
+    if 'campaign_flag' in df.columns:
+        df['has_campaign'] = df['campaign_flag'].astype(str).str.upper().isin(['YES', 'TRUE', '1'])
+    elif 'campaign_code' in df.columns:
+        # Fallback: if there's only one column and it contains YES/NO it's the flag,
+        # otherwise the presence of a non-empty code value means the campaign applied.
+        sample = df['campaign_code'].astype(str).str.upper().head(50).tolist()
+        if any(v in ('YES', 'NO', 'BLANK', 'TRUE', 'FALSE') for v in sample):
+            df['has_campaign'] = df['campaign_code'].astype(str).str.upper().isin(['YES', 'TRUE', '1'])
+        else:
+            df['has_campaign'] = df['campaign_code'].astype(str).str.strip().ne('') & \
+                                 ~df['campaign_code'].astype(str).str.upper().isin(['NAN', 'NONE', 'BLANK'])
 
-    # Try to classify based on channel or other columns
-    if 'channel' in df.columns:
+    # Classify campaign_type from the actual campaign code text (USCVP / CACVP / etc).
+    # Fall back to channel only if there is no code column.
+    if 'campaign_code' in df.columns:
+        df['campaign_type'] = df['campaign_code'].apply(_classify_campaign)
+    elif 'channel' in df.columns:
         df['campaign_type'] = df['channel'].apply(_classify_campaign)
-    elif 'campaign_code' not in df.columns:
+    else:
         df['campaign_type'] = 'Other'
 
-    # CVP fallback: if the row has a campaign code applied (has_campaign=True)
-    # but channel classification produced 'Other', treat it as CVP. The Campaign
-    # Code Extract from SAP only contains rows where a CVP/Demo/etc. campaign
-    # was actually applied — without this fallback every row stays 'Other' and
-    # the dashboard's YTD CVP column reads zero across the board.
+    # If has_campaign is True but classification still says Other, default to CVP
+    # (CVP is by far the most common applied campaign at INEOS Americas).
     if 'has_campaign' in df.columns and 'campaign_type' in df.columns:
         mask = (df['campaign_type'] == 'Other') & (df['has_campaign'] == True)  # noqa: E712
         df.loc[mask, 'campaign_type'] = 'CVP'
@@ -174,18 +196,30 @@ def _process(df):
 
 
 def _classify_campaign(val):
-    """Classify campaign type from code or description text."""
-    if not val:
+    """Classify campaign type from a campaign code value.
+
+    INEOS Americas SAP campaign codes follow the pattern:
+      USCVP, CACVP, MXCVP  → Customer Value Programme (CVP)
+      USDEMO, CADEMO       → Demo / press fleet
+      USFLT, CAFLT         → Fleet
+    Plus the older descriptive variants (CO-DEVELOPMENT, EMPLOYEE,
+    DEMONSTRATION, SUBVENTION, INCENTIVE, etc.) we still want to match.
+    """
+    if val is None:
         return 'Other'
-    val_upper = str(val).upper()
+    s = str(val).strip()
+    if not s or s.upper() in ('NAN', 'NONE', 'BLANK', 'YES', 'NO', 'TRUE', 'FALSE'):
+        return 'Other'
+    val_upper = s.upper()
+    # CVP — explicit country-prefixed codes are the canonical signal
     if 'CVP' in val_upper or 'CO-DEVELOPMENT' in val_upper or 'EMPLOYEE' in val_upper:
         return 'CVP'
-    if 'DEMO' in val_upper or 'DEMONSTRATION' in val_upper:
+    if 'DEMO' in val_upper or 'DEMONSTRATION' in val_upper or 'PRESS' in val_upper:
         return 'Demo'
     if 'SUBVENTION' in val_upper or 'RATE' in val_upper:
         return 'Subvention'
     if 'INCENTIVE' in val_upper or 'BONUS' in val_upper or 'LOYALTY' in val_upper:
         return 'Incentive'
-    if 'FLEET' in val_upper or 'RENTAL' in val_upper:
+    if 'FLEET' in val_upper or 'RENTAL' in val_upper or 'FLT' in val_upper:
         return 'Fleet'
     return 'Other'
