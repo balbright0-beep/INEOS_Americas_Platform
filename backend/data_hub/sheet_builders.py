@@ -813,7 +813,15 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
             row[2] = s['ytd_ho']            # YTD handovers
             row[3] = s['ytd_cvp']           # YTD CVP
             row[4] = s['ytd_ws']            # YTD wholesale (rev rec count)
-            row[5] = '1.00:1'               # gap placeholder
+            # W/S:H/O ratio per dealer — was hardcoded to "1.00:1" which made
+            # the dashboard's W/S:H/O column meaningless. Compute it from the
+            # actual ytd_ws / ytd_ho values. Guard against div-by-zero.
+            if s['ytd_ho'] > 0:
+                row[5] = f"{round(s['ytd_ws'] / s['ytd_ho'], 2):.2f}:1"
+            elif s['ytd_ws'] > 0:
+                row[5] = "∞"
+            else:
+                row[5] = "1.00:1"
             row[6] = s['og']                # on-ground
             row[7] = ds                     # days supply
             row[8] = ds_cvp                 # DS + CVP

@@ -147,6 +147,15 @@ def _process(df):
     elif 'campaign_code' not in df.columns:
         df['campaign_type'] = 'Other'
 
+    # CVP fallback: if the row has a campaign code applied (has_campaign=True)
+    # but channel classification produced 'Other', treat it as CVP. The Campaign
+    # Code Extract from SAP only contains rows where a CVP/Demo/etc. campaign
+    # was actually applied — without this fallback every row stays 'Other' and
+    # the dashboard's YTD CVP column reads zero across the board.
+    if 'has_campaign' in df.columns and 'campaign_type' in df.columns:
+        mask = (df['campaign_type'] == 'Other') & (df['has_campaign'] == True)  # noqa: E712
+        df.loc[mask, 'campaign_type'] = 'CVP'
+
     # Convert amount to numeric
     if 'amount' in df.columns:
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
