@@ -278,21 +278,29 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
   }
 
   .fo-report .fo-table-wrap {
-    overflow-x: auto; -webkit-overflow-scrolling: touch;
     border: 1px solid #E3E1DC; border-radius: 6px;
     background: #FFFFFF;
+    /* no overflow-x by default — that would create a y-axis scroll
+       context and break the sticky thead on page scroll. A media query
+       further down restores horizontal scrolling on narrow screens. */
   }
   .fo-table {
-    width: 100%; border-collapse: collapse;
+    width: 100%; border-collapse: separate; border-spacing: 0;
     font-family: 'Inter', sans-serif; font-size: 12px;
     background: #FFFFFF;
   }
   .fo-table thead tr { background: #FFFFFF; }
   .fo-table th.fo-th {
-    text-align: left; padding: 10px 12px; font-size: 10px;
+    /* Sticky column headers — pinned to the top of the nearest scroll
+       container (.ids-main) so they stay visible while scrolling the
+       daily rows underneath. Needs an opaque background to cover the
+       rows sliding beneath. */
+    position: sticky; top: 0; z-index: 10;
+    text-align: left; padding: 11px 12px; font-size: 10px;
     font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-    color: #727272; border-bottom: 2px solid #D9D7D0;
+    color: #727272;
     white-space: nowrap; background: #FFFFFF;
+    box-shadow: inset 0 -2px 0 #D9D7D0;
   }
   .fo-table td {
     padding: 8px 12px; border-bottom: 1px solid #E3E1DC;
@@ -444,6 +452,17 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
 
   @media (max-width: 900px) {
     .fo-sections { grid-template-columns: 1fr; }
+  }
+
+  /* On narrow viewports the 15-column table won't fit, so we restore
+     horizontal scrolling. This creates a y-axis scroll context too, so
+     sticky thead stops working below this breakpoint — acceptable
+     because mobile users mostly interact with the summary sections. */
+  @media (max-width: 1280px) {
+    .fo-report .fo-table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
   }
 </style>
 """
