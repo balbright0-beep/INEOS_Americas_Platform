@@ -172,6 +172,35 @@ def _process(df):
     else:
         df['campaign_type'] = 'Other'
 
+    # DEFENSIVE FALLBACK: if the column we picked as `campaign_code` doesn't
+    # actually contain CVP/DEMO codes (e.g. it was really the YES/NO flag
+    # column, or the report uses a different column name), scan every other
+    # non-renamed column for one whose values look like real campaign codes.
+    # This protects against header variations in the Campaign Code Extract.
+    classified_cvp = int((df['campaign_type'] == 'CVP').sum())
+    classified_demo = int((df['campaign_type'] == 'Demo').sum())
+    if classified_cvp == 0 and classified_demo == 0:
+        scan_cols = [c for c in df.columns if c not in ('vin', 'campaign_flag', 'campaign_type',
+                                                         'has_campaign', 'channel', 'country',
+                                                         'ship_to_party', 'dealer', 'handover_date',
+                                                         'registration_date', 'retail_date', 'region',
+                                                         'order_no')]
+        best_col = None
+        best_hits = 0
+        for c in scan_cols:
+            try:
+                vals = df[c].astype(str).str.upper()
+            except Exception:
+                continue
+            hits = int(vals.str.contains(r'CVP|DEMO', regex=True, na=False).sum())
+            if hits > best_hits:
+                best_hits = hits
+                best_col = c
+        if best_col is not None and best_hits > 0:
+            print(f"  Campaign Codes: fallback scan chose column '{best_col}' ({best_hits} CVP/DEMO hits) as the code source")
+            df['campaign_code'] = df[best_col]
+            df['campaign_type'] = df['campaign_code'].apply(_classify_campaign)
+
     # NOTE: previously this defaulted any has_campaign=True row with
     # campaign_type='Other' to 'CVP', but that inflated CVP counts with
     # unrelated campaign codes (Fleet, Subvention, etc.). CVP and Demo are
