@@ -721,6 +721,13 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
         if r['country_code'] not in ('US', 'CA', 'MX'):
             continue
 
+        # Dealer Performance is a RETAIL scorecard — exclude Fleet, Internal
+        # and Enterprise (employee) bill-to units so they don't inflate YTD
+        # handovers or wholesale counts. These units still appear on the
+        # Retail Sales Report under the "Internal/Fleet/Rental" region row.
+        if r.get('bt_cat', 'Retail') != 'Retail':
+            continue
+
         dk = r['dealer_upper']
         if not stats[dk]['market']:
             stats[dk]['market'] = r['market']

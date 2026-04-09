@@ -191,7 +191,23 @@ def _process(df):
         df['vin'] = df['vin'].astype(str).str.strip().str.upper()
         df = df[df['vin'].str.len() > 3]
 
-    print(f"  Campaign Codes: {len(df)} rows")
+    # Diagnostic — surface the distribution so we can verify CVP/Demo are
+    # actually being detected on the current Campaign Code Extract file.
+    try:
+        if 'campaign_type' in df.columns:
+            type_counts = df['campaign_type'].value_counts().to_dict()
+            print(f"  Campaign Codes: {len(df)} rows, type_counts={type_counts}")
+            if 'campaign_code' in df.columns:
+                sample_codes = df[df['campaign_type'] == 'CVP']['campaign_code'].astype(str).head(5).tolist()
+                print(f"  Campaign Codes: sample CVP codes={sample_codes}")
+                if not sample_codes:
+                    uniq_codes = df['campaign_code'].astype(str).str.strip().str.upper()
+                    uniq_codes = uniq_codes[uniq_codes.ne('') & ~uniq_codes.isin(['NAN', 'NONE', 'BLANK'])]
+                    print(f"  Campaign Codes: unique codes seen={sorted(set(uniq_codes.head(100)))[:20]}")
+        else:
+            print(f"  Campaign Codes: {len(df)} rows (no campaign_type column!)")
+    except Exception as _diag_err:
+        print(f"  Campaign Codes: {len(df)} rows (diag err: {_diag_err})")
     return df
 
 
@@ -210,19 +226,25 @@ def _classify_campaign(val):
     s = str(val).strip()
     if not s or s.upper() in ('NAN', 'NONE', 'BLANK', 'YES', 'NO', 'TRUE', 'FALSE'):
         return 'Other'
-    val_upper = s.upper().replace(' ', '').replace('-', '').replace('_', '')
-    # CVP — only explicit country-prefixed SAP codes count.
-    # USCVP / CACVP / MXCVP are the canonical Customer Value Programme codes.
-    if any(p in val_upper for p in ('USCVP', 'CACVP', 'MXCVP')):
-        return 'CVP'
-    # Demo — only explicit country-prefixed demo/press-fleet codes.
-    if any(p in val_upper for p in ('USDEMO', 'CADEMO', 'MXDEMO')):
-        return 'Demo'
-    # Other SAP campaign families — kept for reporting but NOT counted as CVP/Demo.
-    if 'SUBVENTION' in val_upper:
+    val_norm = s.upper().replace(' ', '').replace('-', '').replace('_', '')
+    # Reject non-CVP SAP codes that happen to share letters. These used to
+    # be over-classified as CVP because the prior loose matcher included
+    # 'EMPLOYEE' and 'CO-DEVELOPMENT'.
+    if 'EMPLOYEE' in val_norm or 'CODEVELOPMENT' in val_norm:
+        return 'Other'
+    if 'SUBVENTION' in val_norm:
         return 'Subvention'
-    if 'INCENTIVE' in val_upper or 'BONUS' in val_upper or 'LOYALTY' in val_upper:
-        return 'Incentive'
-    if 'FLEET' in val_upper or 'FLT' in val_upper or 'RENTAL' in val_upper:
+    if 'FLEET' in val_norm or 'RENTAL' in val_norm:
         return 'Fleet'
+    # CVP — canonical SAP codes are USCVP / CACVP / MXCVP, but accept any
+    # value containing "CVP" after the above exclusions so we don't miss
+    # minor formatting variants.
+    if 'CVP' in val_norm:
+        return 'CVP'
+    # Demo / press-fleet — USDEMO / CADEMO / MXDEMO. 'DEMO' substring is
+    # specific enough after the non-CVP exclusions above.
+    if 'DEMO' in val_norm:
+        return 'Demo'
+    if 'INCENTIVE' in val_norm or 'BONUS' in val_norm or 'LOYALTY' in val_norm:
+        return 'Incentive'
     return 'Other'
