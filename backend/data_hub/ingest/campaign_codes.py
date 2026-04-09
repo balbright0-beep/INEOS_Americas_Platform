@@ -172,11 +172,11 @@ def _process(df):
     else:
         df['campaign_type'] = 'Other'
 
-    # If has_campaign is True but classification still says Other, default to CVP
-    # (CVP is by far the most common applied campaign at INEOS Americas).
-    if 'has_campaign' in df.columns and 'campaign_type' in df.columns:
-        mask = (df['campaign_type'] == 'Other') & (df['has_campaign'] == True)  # noqa: E712
-        df.loc[mask, 'campaign_type'] = 'CVP'
+    # NOTE: previously this defaulted any has_campaign=True row with
+    # campaign_type='Other' to 'CVP', but that inflated CVP counts with
+    # unrelated campaign codes (Fleet, Subvention, etc.). CVP and Demo are
+    # now driven strictly by the explicit USCVP/CACVP/MXCVP and
+    # USDEMO/CADEMO/MXDEMO code patterns inside _classify_campaign.
 
     # Convert amount to numeric
     if 'amount' in df.columns:
@@ -210,16 +210,19 @@ def _classify_campaign(val):
     s = str(val).strip()
     if not s or s.upper() in ('NAN', 'NONE', 'BLANK', 'YES', 'NO', 'TRUE', 'FALSE'):
         return 'Other'
-    val_upper = s.upper()
-    # CVP — explicit country-prefixed codes are the canonical signal
-    if 'CVP' in val_upper or 'CO-DEVELOPMENT' in val_upper or 'EMPLOYEE' in val_upper:
+    val_upper = s.upper().replace(' ', '').replace('-', '').replace('_', '')
+    # CVP — only explicit country-prefixed SAP codes count.
+    # USCVP / CACVP / MXCVP are the canonical Customer Value Programme codes.
+    if any(p in val_upper for p in ('USCVP', 'CACVP', 'MXCVP')):
         return 'CVP'
-    if 'DEMO' in val_upper or 'DEMONSTRATION' in val_upper or 'PRESS' in val_upper:
+    # Demo — only explicit country-prefixed demo/press-fleet codes.
+    if any(p in val_upper for p in ('USDEMO', 'CADEMO', 'MXDEMO')):
         return 'Demo'
-    if 'SUBVENTION' in val_upper or 'RATE' in val_upper:
+    # Other SAP campaign families — kept for reporting but NOT counted as CVP/Demo.
+    if 'SUBVENTION' in val_upper:
         return 'Subvention'
     if 'INCENTIVE' in val_upper or 'BONUS' in val_upper or 'LOYALTY' in val_upper:
         return 'Incentive'
-    if 'FLEET' in val_upper or 'RENTAL' in val_upper or 'FLT' in val_upper:
+    if 'FLEET' in val_upper or 'FLT' in val_upper or 'RENTAL' in val_upper:
         return 'Fleet'
     return 'Other'
