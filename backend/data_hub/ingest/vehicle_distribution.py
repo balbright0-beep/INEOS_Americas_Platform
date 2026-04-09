@@ -271,12 +271,22 @@ def _load_data_file(xlsx_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _apply_same_month_capping(df: pd.DataFrame) -> pd.DataFrame:
-    """Null out dispatch/pickup/delivered dates that fall in a later month
-    than the FO's create month. Mutates + returns the DataFrame."""
+    """Attach same-month-capped versions of the three lifecycle columns.
+
+    The raw columns (`dispatch`, `pickup`, `delivered`) are LEFT INTACT because
+    the flow-through columns (Col M / N / O) and the Pipeline / Anticipated
+    Remaining calculations need the uncapped pickup dates — a pickup that
+    happened one month after creation still counts as "picked up", it just
+    doesn't count toward the creation month's cohort.
+
+    The capped columns (`dispatch_same_month`, `pickup_same_month`,
+    `delivered_same_month`) feed the daily cohort aggregations: Col C/D/E
+    counts, the three business-day averages, and SLA compliance.
+    """
     create_period = df['create'].dt.to_period('M')
     for col in ('dispatch', 'pickup', 'delivered'):
         same_month = df[col].dt.to_period('M') == create_period
-        df[col] = df[col].where(same_month & df[col].notna())
+        df[f'{col}_same_month'] = df[col].where(same_month & df[col].notna())
     return df
 
 
@@ -284,10 +294,15 @@ def _compute_per_record_bd(
     df: pd.DataFrame,
     holidays: np.ndarray,
 ) -> pd.DataFrame:
-    """Attach per-record BD columns for FO->Disp, Disp->PU, and FO->Delivered."""
-    df['fo_to_disp_bd'] = _vec_busday_count(df['create'], df['dispatch'], holidays)
-    df['disp_to_pu_bd'] = _vec_busday_count(df['dispatch'], df['pickup'], holidays)
-    df['fo_to_delivered_bd'] = _vec_busday_count(df['create'], df['delivered'], holidays)
+    """Attach per-record BD columns for FO->Disp, Disp->PU, and FO->Delivered.
+
+    BD metrics always use the same-month-capped dates: we're measuring how
+    fast an FO moved through the lifecycle within its creation month. A
+    dispatch that happened the following month is outside the SLA scope.
+    """
+    df['fo_to_disp_bd'] = _vec_busday_count(df['create'], df['dispatch_same_month'], holidays)
+    df['disp_to_pu_bd'] = _vec_busday_count(df['dispatch_same_month'], df['pickup_same_month'], holidays)
+    df['fo_to_delivered_bd'] = _vec_busday_count(df['create'], df['delivered_same_month'], holidays)
 
     df['fo_disp_sla_met'] = np.where(
         df['fo_to_disp_bd'].notna(),
@@ -303,15 +318,20 @@ def _compute_per_record_bd(
 
 
 def _aggregate_by_day(df: pd.DataFrame) -> pd.DataFrame:
-    """Group records by FO create date and compute the daily cohort metrics."""
+    """Group records by FO create date and compute the daily cohort metrics.
+
+    Uses the same-month-capped counts so each daily row reports "of the FOs
+    created this day, how many reached dispatch/pickup/delivery WITHIN THEIR
+    CREATION MONTH" — the cohort flow-through metric.
+    """
     df = df.copy()
     df['create_date'] = df['create'].dt.date
 
     agg = df.groupby('create_date').agg(
         fos_created=('fo', 'size'),
-        dispatched=('dispatch', 'count'),
-        picked_up=('pickup', 'count'),
-        delivered=('delivered', 'count'),
+        dispatched=('dispatch_same_month', 'count'),
+        picked_up=('pickup_same_month', 'count'),
+        delivered=('delivered_same_month', 'count'),
         avg_fo_to_disp_bd=('fo_to_disp_bd', 'mean'),
         avg_disp_to_pu_bd=('disp_to_pu_bd', 'mean'),
         avg_e2e_bd=('fo_to_delivered_bd', 'mean'),
