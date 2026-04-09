@@ -147,8 +147,13 @@ class DataHub:
             'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
             'campaign_codes': ('data_hub.ingest.campaign_codes', 'ingest_campaign_codes'),
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
+            'fo_performance': ('data_hub.ingest.fo_performance', 'ingest_fo_performance'),
         }
         ALIASES = {'c4c_leads': 'leads', 'sap_handover': 'handover'}
+        # Keys whose processed bytes are JSON (not parquet) — these need to
+        # be written to cache/data/<key>.json on restore and re-ingested into
+        # a dict rather than a DataFrame.
+        JSON_KEYS = {'fo_performance'}
 
         try:
             from app.database import SessionLocal
@@ -208,7 +213,13 @@ class DataHub:
                     # keys and go straight to the normal restore.
                     is_ga4 = key.startswith('ga4_')
 
-                    if (is_corrupt or force_reingest) and not is_ga4:
+                    # JSON-backed keys (fo_performance, etc.) persist as
+                    # <key>.json not <key>.parquet. Skip the DataFrame re-ingest
+                    # path — they're restored by writing raw bytes to a .json
+                    # file further down.
+                    is_json = key in JSON_KEYS
+
+                    if (is_corrupt or force_reingest) and not is_ga4 and not is_json:
                         # Try raw file + re-ingest
                         raw_key = f'{key}_raw'
                         raw_cf = cached_files.get(raw_key)
@@ -258,8 +269,10 @@ class DataHub:
                         else:
                             print(f"  {key}: parquet corrupt and no raw file available")
 
-                    # Normal restore: write parquet to disk
-                    path = os.path.join(data_dir, f'{key}.parquet')
+                    # Normal restore: write parquet to disk (or .json for
+                    # JSON-backed keys like fo_performance).
+                    ext = 'json' if key in JSON_KEYS else 'parquet'
+                    path = os.path.join(data_dir, f'{key}.{ext}')
                     with open(path, 'wb') as f:
                         f.write(cf.data)
 

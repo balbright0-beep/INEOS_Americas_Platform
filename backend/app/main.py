@@ -12,7 +12,7 @@ from app.config import *  # noqa
 from app.database import engine, Base, SessionLocal, get_db
 from app.models import *  # noqa
 from app.seed import seed_database
-from app.routers import auth, admin, bulletins, links, data
+from app.routers import auth, admin, bulletins, links, data, logistics
 
 
 def _restore_cache_on_startup():
@@ -94,6 +94,7 @@ app.include_router(admin.router)
 app.include_router(bulletins.router)
 app.include_router(links.router)
 app.include_router(data.router)
+app.include_router(logistics.router)
 
 # Lightweight health check for Render zero-downtime deploys
 # Returns 200 immediately with no DB or filesystem dependencies so the

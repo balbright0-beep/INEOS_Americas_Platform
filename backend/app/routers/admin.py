@@ -315,6 +315,7 @@ async def upload_source(source_id: str, file: UploadFile = File(...), admin=Depe
             'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
             'campaign_codes': ('data_hub.ingest.campaign_codes', 'ingest_campaign_codes'),
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
+            'fo_performance': ('data_hub.ingest.fo_performance', 'ingest_fo_performance'),
         }
 
         # ALWAYS store the raw uploaded file in DB first (before parsing)
