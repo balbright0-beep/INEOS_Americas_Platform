@@ -22,6 +22,8 @@ it becomes the default for subsequent callers. When omitted, the persisted
 value is used (falling back to the ingest default of 477).
 """
 
+from __future__ import annotations
+
 import json
 import os
 import tempfile
