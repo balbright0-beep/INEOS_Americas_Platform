@@ -147,13 +147,13 @@ class DataHub:
             'incentive_spend': ('data_hub.ingest.incentive_spend', 'ingest_incentive_spend'),
             'campaign_codes': ('data_hub.ingest.campaign_codes', 'ingest_campaign_codes'),
             'urban_science': ('data_hub.ingest.urban_science', 'ingest_urban_science'),
-            'fo_performance': ('data_hub.ingest.fo_performance', 'ingest_fo_performance'),
+            'vehicle_distribution': ('data_hub.ingest.vehicle_distribution', 'ingest_vehicle_distribution'),
         }
         ALIASES = {'c4c_leads': 'leads', 'sap_handover': 'handover'}
         # Keys whose processed bytes are JSON (not parquet) — these need to
         # be written to cache/data/<key>.json on restore and re-ingested into
         # a dict rather than a DataFrame.
-        JSON_KEYS = {'fo_performance'}
+        JSON_KEYS = {'vehicle_distribution'}
 
         try:
             from app.database import SessionLocal

@@ -234,11 +234,11 @@ function LogisticsPage({isAdmin}){
     if(!file)return;
     setUploading(true);setUploadResult(null);
     try{
-      const r=await API.uploadFile('/api/admin/upload-source/fo_performance',file);
+      const r=await API.uploadFile('/api/admin/upload-source/vehicle_distribution',file);
       setUploadResult(r);
-      toast(r.error?('Upload failed: '+r.error):'FO Performance uploaded','success');
+      toast(r.error?('Upload failed: '+r.error):'Vehicle Distribution uploaded — FO Performance rebuilt','success');
       // Give the server a beat to persist the processed JSON before we refetch
-      setTimeout(()=>{loadHtml();loadMeta()},300);
+      setTimeout(()=>{loadHtml();loadMeta()},500);
     }catch(e){
       setUploadResult({error:e.message});
       toast('Upload failed: '+e.message,'error');
@@ -251,12 +251,12 @@ function LogisticsPage({isAdmin}){
     <div className="flex items-start justify-between mb-4 gap-6">
       <div>
         <h2 className="text-xl font-bold">Logistics — Freight Order Performance</h2>
-        <p className="text-xs text-ineos-iron-smoke mt-1">Daily freight order activity, SLA tracking, and FO pacing to objective. {meta?.uploaded?`Source: ${meta.filename||'workbook'}.`:'No report uploaded yet.'} {uploadedAt?`Last upload: ${uploadedAt}.`:''}</p>
+        <p className="text-xs text-ineos-iron-smoke mt-1">Computed from the weekly Vehicle Distribution workbook. Daily freight order flow-through, SLA compliance, and FO pacing to objective. {meta?.uploaded?`Source: ${meta.filename||'workbook'}.`:'No Vehicle Distribution file uploaded yet.'} {uploadedAt?`Last upload: ${uploadedAt}.`:''}</p>
         {meta?.uploaded&&meta?.months!=null&&<p className="text-[11px] text-ineos-silver-dust mt-1">{meta.months} months · {meta.daily_rows} daily rows</p>}
       </div>
       {isAdmin&&<div className="flex items-center gap-2 shrink-0">
-        <input type="file" id="fo-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>
-        <label htmlFor="fo-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Report':'Upload Report')}</label>
+        <input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>
+        <label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>
         <button onClick={loadHtml} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light">Refresh</button>
       </div>}
     </div>
@@ -383,7 +383,7 @@ function AdminDataUpload(){
       link:null,linkLabel:'Source: SAP campaign extract'},
     {id:'urban_science',label:'Urban Science Extract',desc:'Customer geography data — city, state, ZIP for distance analysis.',cadence:'Monthly',accept:'.xlsx',color:'#5C6BC0',
       link:'https://app.powerbi.com/groups/me/reports/5aa4ec89-b27a-4fd4-bd94-e877cf5b2d1f/db2dca915dbe50e3ad57?ctid=ffea6392-44ee-4085-a734-3de7fd366620&openReportSource=ReportInvitation&experience=power-bi',linkLabel:'Open in Power BI'},
-    {id:'fo_performance',label:'Logistics Freight Orders',desc:'Daily Freight Order Activity workbook (SLA tracking, monthly totals, FO pacing). Renders as HTML in the Logistics tool.',cadence:'Daily',accept:'.xlsx',color:'#A84E1F',
+    {id:'vehicle_distribution',label:'Vehicle Distribution (Logistics)',desc:'Weekly Vehicle Distribution workbook from the logistics team. The Data File sheet drives the Logistics FO Performance report — daily flow-through, SLA compliance, and FO pacing to objective.',cadence:'Weekly',accept:'.xlsx',color:'#A84E1F',
       link:null,linkLabel:'Source: logistics team'},
   ];
 

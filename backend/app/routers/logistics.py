@@ -1,10 +1,14 @@
 """Logistics endpoints — FO Performance report viewer.
 
-Admins upload the Logistics Freight Order xlsx via the existing
-/api/admin/upload-source/fo_performance endpoint, which stores the raw file
-in CachedFile and the parsed dict as JSON under cache/data/fo_performance.json.
+Admins upload the weekly Vehicle Distribution xlsx via the existing
+/api/admin/upload-source/vehicle_distribution endpoint, which stores the raw
+file in CachedFile and the computed FO Performance dict as JSON under
+cache/data/vehicle_distribution.json. The ingest module parses the Data File
+sheet, groups FOs by create date, computes flow-through counts, business-day
+SLA compliance, and cumulative / MTD pickup totals — reproducing the Daily
+Freight Order Activity report the logistics team publishes in Excel.
 
-This router exposes two public (authenticated, any role) read endpoints:
+This router exposes three authenticated read endpoints:
 
   GET /api/logistics/fo-performance       → JSON data
   GET /api/logistics/fo-performance/html  → rendered HTML fragment
@@ -12,7 +16,7 @@ This router exposes two public (authenticated, any role) read endpoints:
 
 Data is re-loaded on each request. If the processed JSON is missing (e.g. the
 cache dir was wiped but the raw xlsx survived in the DB), we transparently
-re-parse from the raw bytes and repopulate the cache.
+re-compute from the raw bytes and repopulate the cache.
 """
 
 from __future__ import annotations
@@ -34,8 +38,8 @@ from app.routers.auth import get_current_user
 router = APIRouter(prefix="/api/logistics", tags=["logistics"])
 
 
-_CACHE_KEY = 'fo_performance'
-_RAW_KEY = 'fo_performance_raw'
+_CACHE_KEY = 'vehicle_distribution'
+_RAW_KEY = 'vehicle_distribution_raw'
 
 
 def _cache_dir() -> str:
@@ -90,14 +94,14 @@ def _load_data(db: Session) -> dict[str, Any] | None:
             backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             if backend_dir not in sys.path:
                 sys.path.insert(0, backend_dir)
-            from data_hub.ingest.fo_performance import ingest_fo_performance
+            from data_hub.ingest.vehicle_distribution import ingest_vehicle_distribution
 
-            suffix = os.path.splitext(raw_cf.filename or 'fo_performance.xlsx')[1] or '.xlsx'
+            suffix = os.path.splitext(raw_cf.filename or 'vehicle_distribution.xlsx')[1] or '.xlsx'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(raw_cf.data)
                 tmp_path = tmp.name
             try:
-                data = ingest_fo_performance(tmp_path)
+                data = ingest_vehicle_distribution(tmp_path)
             finally:
                 try:
                     os.unlink(tmp_path)
@@ -164,7 +168,7 @@ def get_fo_performance_meta(user=Depends(get_current_user), db: Session = Depend
         print(f"  [logistics] meta raw query failed: {e}")
 
     try:
-        last = db.query(AppState).filter(AppState.key == 'source_fo_performance_last').first()
+        last = db.query(AppState).filter(AppState.key == 'source_vehicle_distribution_last').first()
         if last and last.value:
             meta['last_ingest'] = last.value
     except Exception:
