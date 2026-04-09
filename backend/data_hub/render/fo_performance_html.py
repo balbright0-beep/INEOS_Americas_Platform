@@ -1,29 +1,23 @@
 """Render a parsed FO Performance report as a self-contained HTML fragment.
 
-Quiet Luxury palette (per the render spec):
-  - Canvas   #F2ECE3  (report background)
-  - Surface  #E5DDD3  (alt row fill)
-  - Tertiary #D6CEC4  (header + month-total fill)
-  - Rule     #C9BFB3  (hair-weight rules)
-  - H1       #2A1F0F
-  - Body     #3C342C
-  - Caption  #6F6558
-  - Muted    #8A7F72
-  - Burgundy #6B2D3E  (Grand Total, Anticipated Remaining, pacing result; max 5% area)
-  - Green    #4A7C59  (compliance ≥95%)
-  - Amber    #8B6914  (compliance 75–94%)
-  - Red      #8B3A3A  (compliance <75%, Avg BD >3 highlight)
+Uses the INEOS Design System (IDS) tokens so the report blends in with the
+rest of the Americas Hub:
 
-Font: PP Neue Montreal (with system fallbacks).
-No bold in data rows. Hair-weight horizontal rules only. No vertical rules.
+  - Surfaces: page #FAFAF9, card #FFFFFF, sunken #E3E1DC
+  - Borders:  subtle #E3E1DC, default #D9D7D0
+  - Text:     primary #1D1D1D, secondary #606060, tertiary #727272
+  - Accent:   flare red #FF4639 (and hover #E63E32)
+  - Status:   success #2E7D32, warning #BF360C, error #C4281D
+  - Fonts:    Plus Jakarta Sans (headings) + Inter (body)
 
-The renderer supports two output modes:
-  - fragment  (default): self-contained HTML fragment (CSS + markup) suitable
-                         for React's dangerouslySetInnerHTML. React attaches
-                         click handlers for the collapsible months.
-  - standalone (export): full <!doctype html> document with inline CSS + the
-                         collapsible-month toggle <script>, so the downloaded
-                         HTML works offline.
+Two output modes:
+  - fragment  (default): self-contained HTML + CSS fragment that embeds
+                         inside the React LogisticsPage via
+                         dangerouslySetInnerHTML. React wires the
+                         collapsible-month click handler itself.
+  - standalone (export): full <!doctype html> document with inline CSS +
+                         a bootstrap <script> so the downloaded file works
+                         offline without any assets.
 """
 
 from __future__ import annotations
@@ -39,8 +33,8 @@ NUMERIC_KEYS = {
     'cumulative_awaiting_pu', 'mtd_pickups',
 }
 
-# BD columns that get a red highlight when the average exceeds 3.
-BD_KEYS_WITH_RED_HIGHLIGHT = {'avg_fo_to_disp_bd', 'avg_disp_to_pu_bd', 'avg_e2e_bd'}
+# BD columns that get a subtle warning tint when the average exceeds 3 BD.
+BD_KEYS_WITH_WARNING = {'avg_fo_to_disp_bd', 'avg_disp_to_pu_bd', 'avg_e2e_bd'}
 
 COMPLIANCE_GOOD = 0.95
 COMPLIANCE_WARN = 0.75
@@ -66,17 +60,13 @@ def _fmt_number(value: Any) -> str:
 
 
 def _fmt_compliance(value: Any) -> tuple[str, str]:
-    """Return (text, css_class) for a compliance fraction."""
     if value is None or value == '':
         return '', ''
     try:
         f = float(value)
     except (ValueError, TypeError):
         return html.escape(str(value)), ''
-    if 0 <= f <= 1:
-        pct = f * 100
-    else:
-        pct = f
+    pct = f * 100 if 0 <= f <= 1 else f
     text = f"{pct:.0f}%"
     if pct >= COMPLIANCE_GOOD * 100:
         cls = 'fo-good'
@@ -95,7 +85,7 @@ def _cell_html(key: str, value: Any) -> str:
     if key in COMPLIANCE_KEYS:
         text, cls = _fmt_compliance(value)
         return f'<td class="fo-num {cls}">{text}</td>'
-    if key in BD_KEYS_WITH_RED_HIGHLIGHT:
+    if key in BD_KEYS_WITH_WARNING:
         try:
             f = float(value)
         except (ValueError, TypeError):
@@ -122,14 +112,11 @@ def _render_sections(sections: list[dict[str, Any]]) -> str:
         rows = s.get('rows', [])
         section_id = s.get('id', '')
         is_glossary = section_id == 'column_definitions' or 'COLUMN DEFINITIONS' in title.upper()
-        is_anticipated = section_id == 'anticipated_wholesales'
         is_pacing = section_id == 'fo_pacing'
 
         section_class = 'fo-section'
         if is_glossary:
             section_class += ' fo-section-glossary'
-        if is_anticipated:
-            section_class += ' fo-section-anticipated'
         if is_pacing:
             section_class += ' fo-section-pacing'
 
@@ -153,22 +140,20 @@ def _render_sections(sections: list[dict[str, Any]]) -> str:
                 value = cells[11]
                 note = cells[13] or ''
                 label_upper = str(label).upper()
-                # Tag rows so CSS can highlight the objective + FOs/day rows
-                # in burgundy (the "yellow box" equivalents).
                 tr_class = ''
                 value_class = 'fo-summary-value'
                 if 'MONTHLY WHOLESALE OBJECTIVE' in label_upper:
                     tr_class = 'fo-summary-objective'
-                    value_class += ' fo-accent-edit'
+                    value_class += ' fo-accent'
                 elif 'NEW FOS NEEDED PER DAY' in label_upper:
                     tr_class = 'fo-summary-result'
-                    value_class += ' fo-accent-burgundy'
+                    value_class += ' fo-accent'
                 elif 'ANTICIPATED REMAINING WHOLESALES' in label_upper:
                     tr_class = 'fo-summary-highlight'
-                    value_class += ' fo-accent-burgundy'
+                    value_class += ' fo-strong'
                 elif label_upper.startswith('MTD WHOLESALES'):
                     tr_class = 'fo-summary-highlight'
-                    value_class += ' fo-accent-good'
+                    value_class += ' fo-good-value'
                 out.append(
                     f'<tr class="{tr_class}">'
                     f'<td class="fo-summary-label">{html.escape(str(label))}</td>'
@@ -231,12 +216,12 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
         )
 
     table_html = (
-        '<table class="fo-table"><thead><tr>'
+        '<div class="fo-table-wrap"><table class="fo-table"><thead><tr>'
         + header_cells
         + '</tr></thead>'
         + ''.join(tbody_parts)
         + grand_tbody
-        + '</table>'
+        + '</table></div>'
     )
 
     sections_html = _render_sections(sections)
@@ -270,166 +255,195 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
 </script>
 """
 
+    # All colors below come straight from backend/static/ids.css so the
+    # report blends into the rest of the hub without importing the stylesheet.
     css = """
 <style>
   .fo-report {
-    font-family: "PP Neue Montreal", "Inter", -apple-system, BlinkMacSystemFont,
-                 "Segoe UI", Roboto, sans-serif;
-    color: #3C342C;
-    background: #F2ECE3;
-    padding: 4px 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Roboto, sans-serif;
+    color: #1D1D1D;
     font-feature-settings: "ss01", "tnum";
+    font-size: 13px;
+    line-height: 1.5;
   }
   .fo-report h2.fo-title {
-    font-size: 16px; font-weight: 500; letter-spacing: 0.2px;
-    margin: 0 0 4px; color: #2A1F0F;
-    padding: 16px 20px; background: #E5DDD3;
-    border-bottom: 1px solid #C9BFB3;
+    font-family: 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif;
+    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+    margin: 0 0 4px; color: #1D1D1D;
   }
   .fo-report .fo-generated {
-    font-size: 10.5px; color: #8A7F72; margin: 0 0 20px;
-    padding: 6px 20px 0; font-style: italic;
+    font-size: 11px; color: #727272; margin: 0 0 16px;
+    font-family: 'Inter', sans-serif;
   }
 
-  .fo-table {
-    width: 100%; border-collapse: collapse; font-size: 11.5px;
-    background: #F2ECE3;
+  .fo-report .fo-table-wrap {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    border: 1px solid #E3E1DC; border-radius: 6px;
+    background: #FFFFFF;
   }
-  .fo-table thead tr { background: #D6CEC4; }
+  .fo-table {
+    width: 100%; border-collapse: collapse;
+    font-family: 'Inter', sans-serif; font-size: 12px;
+    background: #FFFFFF;
+  }
+  .fo-table thead tr { background: #FFFFFF; }
   .fo-table th.fo-th {
-    text-align: left; padding: 10px 10px; font-size: 9.5px;
-    font-weight: 500; text-transform: uppercase; letter-spacing: 0.8px;
-    color: #6F6558; border-bottom: 1px solid #C9BFB3;
-    white-space: nowrap;
+    text-align: left; padding: 10px 12px; font-size: 10px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #727272; border-bottom: 2px solid #D9D7D0;
+    white-space: nowrap; background: #FFFFFF;
   }
   .fo-table td {
-    padding: 7px 10px; border-bottom: 1px solid #C9BFB3;
-    vertical-align: middle; font-weight: 400; color: #3C342C;
+    padding: 8px 12px; border-bottom: 1px solid #E3E1DC;
+    vertical-align: middle; color: #606060; font-weight: 400;
   }
-  .fo-table td.fo-date { color: #3C342C; white-space: nowrap; }
-  .fo-table td.fo-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .fo-table td.fo-date { color: #1D1D1D; white-space: nowrap; font-weight: 500; }
+  .fo-table td.fo-num {
+    text-align: right; font-variant-numeric: tabular-nums;
+    color: #1D1D1D;
+  }
 
-  /* Alternating row fills — header is always position 1, so daily rows
-     alternate even/odd starting from position 2. The .fo-month-header and
-     .fo-month-total rules below use !important to override these stripes. */
-  .fo-table tbody.fo-month tr:nth-child(even) td { background: #E5DDD3; }
-  .fo-table tbody.fo-month tr:nth-child(odd) td { background: #F2ECE3; }
-
-  /* Month header — clickable, no border weight on the right */
+  /* Month header — subtle sunken bg, clickable */
   .fo-table tr.fo-month-header { cursor: pointer; user-select: none; }
   .fo-table tr.fo-month-header td {
-    background: #E5DDD3 !important; font-weight: 500; color: #6F6558;
-    padding: 12px 14px; border-top: 1px solid #C9BFB3;
-    text-transform: uppercase; font-size: 10.5px; letter-spacing: 1px;
+    background: #FAFAF9; font-weight: 600; color: #606060;
+    padding: 9px 14px; border-top: 1px solid #E3E1DC;
+    text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em;
+    transition: background 150ms cubic-bezier(0.25,0.46,0.45,0.94);
   }
-  .fo-table tr.fo-month-header:hover td { background: #D6CEC4 !important; color: #2A1F0F; }
+  .fo-table tr.fo-month-header:hover td { background: #E9E8E5; color: #1D1D1D; }
   .fo-table tr.fo-month-header:focus { outline: none; }
-  .fo-table tr.fo-month-header:focus td { box-shadow: inset 2px 0 0 #6B2D3E; }
+  .fo-table tr.fo-month-header:focus td { box-shadow: inset 2px 0 0 #FF4639; }
   .fo-table .fo-caret {
-    display: inline-block; width: 14px; margin-right: 8px;
-    color: #8A7F72; font-size: 9px;
+    display: inline-block; width: 12px; margin-right: 8px;
+    color: #FF4639; font-size: 10px;
     transition: transform 160ms ease;
   }
   .fo-table tbody.fo-month.fo-collapsed .fo-caret { transform: rotate(-90deg); }
   .fo-table tbody.fo-month.fo-collapsed tr:not(.fo-month-header) { display: none; }
 
-  /* Month subtotal row */
+  /* Data row hover state matches ids-table */
+  .fo-table tbody.fo-month tr:not(.fo-month-header):not(.fo-month-total):hover td {
+    background: #F0EFEC;
+  }
+
+  /* Month total */
   .fo-table tr.fo-month-total td {
-    background: #D6CEC4 !important; font-weight: 500; color: #2A1F0F;
-    border-top: 1px solid #C9BFB3; border-bottom: 1px solid #C9BFB3;
+    background: #F0EFEC; font-weight: 600; color: #1D1D1D;
+    border-top: 1px solid #D9D7D0; border-bottom: 1px solid #D9D7D0;
   }
 
-  /* Grand total — the one Burgundy accent */
+  /* Grand total — INEOS flare red */
   .fo-table tr.fo-grand-total td {
-    background: #6B2D3E !important; color: #F2ECE3 !important;
-    font-weight: 500; padding: 12px 10px;
-    border-top: 1px solid #6B2D3E; border-bottom: none;
-    letter-spacing: 0.3px;
+    background: #1D1D1D; color: #FAFAF9; font-weight: 600;
+    padding: 12px; border-top: 2px solid #FF4639; border-bottom: none;
+    letter-spacing: 0.02em;
   }
+  .fo-table tr.fo-grand-total td.fo-date { color: #FAFAF9; }
+  .fo-table tr.fo-grand-total td.fo-num { color: #FAFAF9; }
 
-  /* Compliance bands */
+  /* Compliance bands — IDS status colors */
   .fo-table td.fo-good {
-    color: #4A7C59; font-weight: 500;
+    color: #2E7D32; font-weight: 600;
   }
   .fo-table td.fo-warn {
-    color: #8B6914; font-weight: 500;
+    color: #BF360C; font-weight: 600;
   }
   .fo-table td.fo-bad {
-    color: #8B3A3A; font-weight: 500;
-    background: #E8D5D5 !important;
+    color: #C4281D; font-weight: 600;
+    background: #FFEBE9;
   }
-  /* Red highlight when average BD exceeds the 3-day SLA */
-  .fo-table td.fo-bd-over {
-    color: #8B3A3A; font-weight: 500;
-  }
+  .fo-table td.fo-bd-over { color: #BF360C; font-weight: 600; }
 
-  /* Spacer toolbar (Expand / Collapse) — only rendered in standalone */
+  /* Toolbar (standalone only) */
   .fo-toolbar {
-    display: flex; gap: 8px; margin: 16px 0 12px; padding: 0 20px;
+    display: flex; gap: 8px; margin: 0 0 12px;
   }
   .fo-toolbar button {
-    background: #F2ECE3; border: 1px solid #C9BFB3; color: #6F6558;
-    font-family: inherit; font-size: 10px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.8px;
-    padding: 7px 12px; cursor: pointer;
+    background: #FFFFFF; border: 1px solid #E3E1DC; color: #606060;
+    font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500;
+    padding: 7px 12px; border-radius: 4px; cursor: pointer;
+    transition: all 150ms cubic-bezier(0.25,0.46,0.45,0.94);
   }
-  .fo-toolbar button:hover { background: #E5DDD3; color: #2A1F0F; border-color: #8A7F72; }
+  .fo-toolbar button:hover {
+    background: #FAFAF9; color: #1D1D1D; border-color: #D9D7D0;
+  }
 
-  /* Summary sections */
+  /* Summary sections — styled like .ids-card */
   .fo-sections {
-    margin-top: 28px; display: flex; flex-direction: column; gap: 16px;
-    padding: 0 0;
+    margin-top: 24px; display: grid;
+    grid-template-columns: 1fr 1fr; gap: 16px;
   }
+  .fo-sections .fo-section-glossary { grid-column: 1 / -1; }
   .fo-section {
-    background: #F2ECE3; border-top: 1px solid #C9BFB3;
-    padding: 16px 20px;
+    background: #FFFFFF; border: 1px solid #E3E1DC;
+    border-radius: 6px; padding: 20px 24px;
+    transition: all 200ms cubic-bezier(0.25,0.46,0.45,0.94);
   }
+  .fo-section:hover { border-color: #D9D7D0; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06); }
   .fo-section h3 {
-    font-size: 10px; font-weight: 500; text-transform: uppercase;
-    letter-spacing: 1.2px; color: #8A7F72; margin: 0 0 12px;
+    font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; color: #727272;
+    margin: 0 0 14px;
   }
-  .fo-summary { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .fo-summary { width: 100%; border-collapse: collapse; font-size: 13px; }
   .fo-summary td {
-    padding: 7px 10px; border-bottom: 1px solid #C9BFB3;
-    font-weight: 400; color: #3C342C;
+    padding: 9px 4px; border-bottom: 1px solid #E3E1DC;
+    font-weight: 400; color: #606060;
   }
   .fo-summary tr:last-child td { border-bottom: none; }
-  .fo-summary td.fo-summary-label { color: #3C342C; }
+  .fo-summary td.fo-summary-label { color: #1D1D1D; }
   .fo-summary td.fo-summary-value {
-    text-align: right; font-weight: 500; font-variant-numeric: tabular-nums;
-    width: 130px; color: #2A1F0F;
+    text-align: right; font-weight: 600; font-variant-numeric: tabular-nums;
+    width: 130px; color: #1D1D1D;
+    font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+    font-size: 15px;
   }
+  .fo-summary td.fo-summary-value.fo-accent { color: #FF4639; }
+  .fo-summary td.fo-summary-value.fo-strong { color: #1D1D1D; }
+  .fo-summary td.fo-summary-value.fo-good-value { color: #2E7D32; }
   .fo-summary td.fo-summary-note {
-    color: #8A7F72; font-size: 10.5px; font-style: italic; width: 260px;
+    color: #727272; font-size: 11px; font-style: italic; width: 220px;
+    text-align: right;
   }
 
-  /* The two "yellow box" highlights — burgundy accent so the eye lands on
-     the editable objective and the computed FOs/day result. */
+  /* The two highlighted rows — MONTHLY WHOLESALE OBJECTIVE (editable)
+     and NEW FOs NEEDED PER DAY (computed result). Subtle flare-red
+     accent bar on the left and slight background tint. */
   .fo-summary tr.fo-summary-objective td {
-    background: #FBF4E3; border-bottom: 1px solid #E8D5A8;
+    background: rgba(255,70,57,0.04);
   }
-  .fo-summary tr.fo-summary-objective td.fo-accent-edit {
-    color: #6B2D3E; font-weight: 500;
+  .fo-summary tr.fo-summary-objective td.fo-summary-label {
+    border-left: 3px solid #FF4639; padding-left: 10px; font-weight: 600;
   }
   .fo-summary tr.fo-summary-result td {
-    background: #FBF4E3; border-bottom: none; border-top: 1px solid #E8D5A8;
+    background: rgba(255,70,57,0.04);
+    border-top: 1px solid #FF4639;
   }
-  .fo-summary tr.fo-summary-result td.fo-accent-burgundy {
-    color: #6B2D3E; font-weight: 500;
+  .fo-summary tr.fo-summary-result td.fo-summary-label {
+    border-left: 3px solid #FF4639; padding-left: 10px; font-weight: 600;
   }
-  .fo-summary tr.fo-summary-highlight td.fo-accent-burgundy { color: #6B2D3E; font-weight: 500; }
-  .fo-summary tr.fo-summary-highlight td.fo-accent-good { color: #4A7C59; font-weight: 500; }
+  .fo-summary tr.fo-summary-result td.fo-summary-value {
+    font-size: 18px;
+  }
+  .fo-summary tr.fo-summary-highlight td.fo-strong { color: #1D1D1D; font-size: 16px; }
 
-  /* Glossary column definitions */
+  /* Glossary */
+  .fo-section-glossary .fo-summary td { padding: 7px 4px; }
   .fo-section-glossary .fo-summary td.fo-def-key {
-    width: 60px; font-weight: 500; color: #8A7F72;
-    text-transform: uppercase; letter-spacing: 0.6px; font-size: 10px;
+    width: 60px; font-weight: 600; color: #727272;
+    text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px;
   }
   .fo-section-glossary .fo-summary td.fo-def-name {
-    width: 180px; font-weight: 500; color: #2A1F0F;
+    width: 200px; font-weight: 600; color: #1D1D1D;
   }
   .fo-section-glossary .fo-summary td.fo-def-desc {
-    color: #6F6558; font-size: 11px;
+    color: #606060; font-size: 12px;
+  }
+
+  @media (max-width: 900px) {
+    .fo-sections { grid-template-columns: 1fr; }
   }
 </style>
 """
@@ -458,9 +472,10 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         f'<title>{title}</title>'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">'
         + css
         + toggle_js
-        + '</head><body style="margin:0;padding:24px;background:#F2ECE3">'
+        + '</head><body style="margin:0;padding:32px;background:#FAFAF9;font-family:\'Inter\',sans-serif">'
         + body
         + '</body></html>'
     )

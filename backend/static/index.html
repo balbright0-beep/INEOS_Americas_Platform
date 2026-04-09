@@ -328,37 +328,43 @@ function LogisticsPage({isAdmin}){
 
   const uploadedAt=meta?.uploaded_at?new Date(meta.uploaded_at).toLocaleString():null;
 
-  return <div>
-    <div className="flex items-start justify-between mb-4 gap-6">
+  return <div className="space-y-6">
+    <div className="flex items-start justify-between gap-6">
       <div>
-        <h2 className="text-xl font-bold">Logistics — Freight Order Performance</h2>
-        <p className="text-xs text-ineos-iron-smoke mt-1">Computed from the weekly Vehicle Distribution workbook. Daily freight order flow-through, SLA compliance, and FO pacing to objective. {meta?.uploaded?`Source: ${meta.filename||'workbook'}.`:'No Vehicle Distribution file uploaded yet.'} {uploadedAt?`Last upload: ${uploadedAt}.`:''}</p>
-        {meta?.uploaded&&meta?.months!=null&&<p className="text-[11px] text-ineos-silver-dust mt-1">{meta.months} months · {meta.daily_rows} daily rows</p>}
+        <h2 className="text-2xl font-bold text-ineos-charcoal" style={{fontFamily:'var(--ids-font-heading)'}}>Freight Order Performance</h2>
+        <p className="text-sm text-ineos-iron-smoke mt-1">Daily freight order flow-through, SLA compliance, and monthly pacing to objective.</p>
+        {meta?.uploaded?<p className="text-xs text-ineos-silver-dust mt-2">Source: <span className="text-ineos-iron-smoke">{meta.filename||'vehicle distribution workbook'}</span>{uploadedAt&&<> · Last upload {uploadedAt}</>}{meta?.months!=null&&<> · {meta.months} months · {meta.daily_rows} daily rows</>}</p>:<p className="text-xs text-ineos-silver-dust mt-2">No Vehicle Distribution file uploaded yet.</p>}
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {isAdmin&&<input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>}
-        {isAdmin&&<label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>}
-        <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light disabled:opacity-50 disabled:cursor-not-allowed">{exporting?'Exporting...':'Export HTML'}</button>
-        <button onClick={()=>loadHtml()} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light">Refresh</button>
+        {isAdmin&&<label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white bg-ineos-red hover:opacity-90 transition-opacity" style={{background:uploading?'var(--ids-silver-dust)':'var(--ids-accent)'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Report':'Upload Report')}</label>}
+        <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{exporting?'Exporting...':'Export HTML'}</button>
+        <button onClick={()=>loadHtml()} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors">Refresh</button>
       </div>
     </div>
 
-    {uploadResult&&uploadResult.error&&<div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-700">Upload error: {uploadResult.error}</div>}
+    {uploadResult&&uploadResult.error&&<div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">Upload error: {uploadResult.error}</div>}
 
-    {meta?.uploaded&&<div className="bg-white rounded-xl border border-ineos-dove p-4 mb-4 flex flex-wrap items-center gap-6">
-      <div className="flex items-center gap-3">
-        <label htmlFor="fo-objective" className="text-xs font-semibold uppercase tracking-wider text-ineos-iron-smoke">Monthly Wholesale Objective</label>
-        <input id="fo-objective" type="number" min="0" max="100000" value={objectiveDraft} onChange={onObjectiveChange} onBlur={onObjectiveBlur} className="w-24 border border-ineos-dove rounded px-2 py-1.5 text-sm text-right font-mono" style={{borderLeft:'3px solid #A84E1F'}}/>
-        <span className="text-[11px] text-ineos-silver-dust">Updates FO Pacing automatically</span>
+    {meta?.uploaded&&<div className="bg-white rounded-xl border border-ineos-dove p-5 flex flex-wrap items-center gap-6">
+      <div className="flex items-center gap-4">
+        <div className="flex flex-col">
+          <label htmlFor="fo-objective" className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ineos-silver-dust mb-1">Monthly Wholesale Objective</label>
+          <div className="flex items-center gap-2">
+            <input id="fo-objective" type="number" min="0" max="100000" value={objectiveDraft} onChange={onObjectiveChange} onBlur={onObjectiveBlur} className="w-28 border border-ineos-dove rounded px-3 py-2 text-base text-right font-semibold text-ineos-charcoal focus:outline-none focus:border-ineos-red focus:ring-1 focus:ring-ineos-red" style={{fontFamily:'var(--ids-font-heading)',fontVariantNumeric:'tabular-nums'}}/>
+            <span className="text-[11px] text-ineos-silver-dust">FOs/month</span>
+          </div>
+        </div>
+        <div className="h-10 w-px bg-ineos-dove"></div>
+        <p className="text-xs text-ineos-iron-smoke max-w-xs leading-relaxed">Updates <span className="font-medium text-ineos-charcoal">NEW FOs NEEDED PER DAY</span> in the FO Pacing section automatically.</p>
       </div>
       <div className="flex items-center gap-2 ml-auto">
-        <button onClick={expandAll} className="text-[11px] font-semibold uppercase tracking-wider text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-2 py-1">Expand all</button>
-        <button onClick={collapseAll} className="text-[11px] font-semibold uppercase tracking-wider text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-2 py-1">Collapse all</button>
+        <button onClick={expandAll} className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-3 py-2 transition-colors">Expand all</button>
+        <button onClick={collapseAll} className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-3 py-2 transition-colors">Collapse all</button>
       </div>
     </div>}
 
-    <div className="bg-white rounded-xl border border-ineos-dove p-5">
-      {loading&&<p className="text-sm text-ineos-silver-dust">Loading report…</p>}
+    <div className="bg-white rounded-xl border border-ineos-dove p-6">
+      {loading&&<div className="flex items-center justify-center py-12"><p className="text-sm text-ineos-silver-dust">Loading report…</p></div>}
       {error&&<p className="text-sm text-red-600">Failed to load report: {error}</p>}
       {!loading&&!error&&<div ref={reportRef} dangerouslySetInnerHTML={{__html:html}}/>}
     </div>
