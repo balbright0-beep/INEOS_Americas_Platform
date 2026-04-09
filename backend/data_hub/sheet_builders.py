@@ -381,8 +381,18 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             rr = ho.get('rev_rec_date', None) if isinstance(ho, dict) else getattr(ho, 'rev_rec_date', None)
             rev_rec_date = _safe_date(rr)
 
-        # NO fallback to invoice_date — the Master File only uses handover dates
-        # from the Handover Report for column 51. Invoice dates would inflate counts.
+        # NO fallback to invoice_date for `ho_date` — the Master File only uses
+        # handover dates from the Handover Report for column 51. Invoice dates
+        # would inflate counts on the Export sheet.
+        #
+        # However, DPD (Dealer Performance) needs to match processor_original's
+        # build_MO, which for sold units without a handover report date falls
+        # back to invoice date, then rev_rec. We expose this as effective_ho_date
+        # so DPD can count consistently with the rest of the dashboard.
+        invoice_dt = _safe_date(r.get('invoice_date', None))
+        effective_ho_date = ho_date
+        if not effective_ho_date and ('sold' in status or '8.' in status):
+            effective_ho_date = invoice_dt or rev_rec_date
 
         # Market
         # Use mkt_map (from template/hardcoded) FIRST, not SAP's market_area which is "AMERICAS"
@@ -415,6 +425,8 @@ def _parse_export_rows(sap, handover=None, sales_order=None, campaign_codes=None
             'my': _detect_my(material),
             'msrp': r.get('msrp', 0),
             'ho_date': ho_date,
+            'effective_ho_date': effective_ho_date,
+            'invoice_date': invoice_dt,
             'is_cvp': vin in cvp_vins,
             'plant': _safe_str(r.get('plant_code', '')),
             'trim': _safe_str(r.get('trim', '')),
@@ -723,13 +735,17 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
         if rrd and rrd.year == cur_year:
             stats[dk]['ytd_ws'] += 1
 
-        # Handovers
-        if r['ho_date']:
-            ho_ym = r['ho_date'].strftime('%Y-%m')
+        # Handovers — use effective_ho_date to match build_MO's fallback chain
+        # (handover report → invoice date → rev_rec for sold units). Keeping
+        # this aligned prevents DPD from under-counting relative to the rest
+        # of the dashboard for units sold but missing from the Handover Report.
+        eff_ho = r.get('effective_ho_date') or r['ho_date']
+        if eff_ho:
+            ho_ym = eff_ho.strftime('%Y-%m')
             stats[dk]['monthly'][ho_ym] += 1
 
             # YTD (current calendar year)
-            if r['ho_date'].year == cur_year:
+            if eff_ho.year == cur_year:
                 stats[dk]['ytd_ho'] += 1
                 if r['is_cvp']:
                     stats[dk]['ytd_cvp'] += 1
@@ -740,7 +756,7 @@ def build_dpd_sheet(ws, export_rows, mkt_map, leads=None, urban_science=None, de
                     stats[dk]['mtd_cvp'] += 1
 
             # 90-day rolling for daily sales rate
-            if r['ho_date'] >= r90_start:
+            if eff_ho >= r90_start:
                 stats[dk]['r90_sales'] += 1
 
     # ── Use pre-computed sales matchback (MB%) ──
