@@ -18,7 +18,7 @@ body{font-family:var(--ids-font-body);background:var(--ids-surface-page);color:v
 </head>
 <body class="font-sans"><div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect}=React;
+const {useState,useEffect,useRef}=React;
 
 /* ===== API ===== */
 const API={
@@ -215,20 +215,55 @@ function LogisticsPage({isAdmin}){
   const[uploading,setUploading]=useState(false);
   const[uploadResult,setUploadResult]=useState(null);
   const[error,setError]=useState(null);
+  const[objective,setObjective]=useState(477);
+  const[objectiveDraft,setObjectiveDraft]=useState('477');
+  const[exporting,setExporting]=useState(false);
+  const reportRef=useRef(null);
+  const debounceRef=useRef(null);
 
-  const loadHtml=async()=>{
+  const authHeaders=()=>{const h={};if(API.token)h['Authorization']='Bearer '+API.token;return h};
+
+  const loadHtml=async(obj)=>{
     setLoading(true);setError(null);
     try{
-      const h={};if(API.token)h['Authorization']='Bearer '+API.token;
-      const res=await fetch('/api/logistics/fo-performance/html',{headers:h});
+      const o=obj!==undefined?obj:objective;
+      const res=await fetch(`/api/logistics/fo-performance/html?objective=${encodeURIComponent(o)}`,{headers:authHeaders()});
       if(!res.ok)throw new Error(`HTTP ${res.status}`);
       setHtml(await res.text());
     }catch(e){setError(e.message)}
     finally{setLoading(false)}
   };
-  const loadMeta=()=>API.get('/api/logistics/fo-performance/meta').then(setMeta).catch(()=>setMeta(null));
+  const loadMeta=async()=>{
+    try{
+      const r=await API.get('/api/logistics/fo-performance/meta');
+      setMeta(r);
+      if(r?.monthly_objective!=null){
+        setObjective(r.monthly_objective);
+        setObjectiveDraft(String(r.monthly_objective));
+      }
+    }catch(e){setMeta(null)}
+  };
 
-  useEffect(()=>{loadHtml();loadMeta()},[]);
+  useEffect(()=>{(async()=>{await loadMeta();await loadHtml()})()},[]);
+
+  // Wire up collapsible month headers + prevent duplicate bindings on re-render.
+  useEffect(()=>{
+    if(!reportRef.current)return;
+    const root=reportRef.current;
+    const headers=root.querySelectorAll('.fo-month-header');
+    const handlers=[];
+    headers.forEach(hdr=>{
+      const onClick=()=>{
+        const tb=hdr.closest('tbody.fo-month');
+        if(!tb)return;
+        const collapsed=tb.classList.toggle('fo-collapsed');
+        hdr.setAttribute('aria-expanded',collapsed?'false':'true');
+      };
+      hdr.addEventListener('click',onClick);
+      handlers.push([hdr,onClick]);
+    });
+    return()=>handlers.forEach(([h,fn])=>h.removeEventListener('click',fn));
+  },[html]);
 
   const upload=async(file)=>{
     if(!file)return;
@@ -238,11 +273,57 @@ function LogisticsPage({isAdmin}){
       setUploadResult(r);
       toast(r.error?('Upload failed: '+r.error):'Vehicle Distribution uploaded — FO Performance rebuilt','success');
       // Give the server a beat to persist the processed JSON before we refetch
-      setTimeout(()=>{loadHtml();loadMeta()},500);
+      setTimeout(()=>{loadMeta();loadHtml()},500);
     }catch(e){
       setUploadResult({error:e.message});
       toast('Upload failed: '+e.message,'error');
     }finally{setUploading(false)}
+  };
+
+  const applyObjective=(val)=>{
+    const n=parseInt(val,10);
+    if(isNaN(n)||n<0||n>100000)return;
+    setObjective(n);
+    loadHtml(n);
+  };
+  const onObjectiveChange=(e)=>{
+    const v=e.target.value;
+    setObjectiveDraft(v);
+    if(debounceRef.current)clearTimeout(debounceRef.current);
+    debounceRef.current=setTimeout(()=>applyObjective(v),450);
+  };
+  const onObjectiveBlur=()=>{
+    if(debounceRef.current){clearTimeout(debounceRef.current);debounceRef.current=null}
+    applyObjective(objectiveDraft);
+  };
+
+  const expandAll=()=>{
+    if(!reportRef.current)return;
+    reportRef.current.querySelectorAll('tbody.fo-month').forEach(tb=>tb.classList.remove('fo-collapsed'));
+    reportRef.current.querySelectorAll('.fo-month-header').forEach(h=>h.setAttribute('aria-expanded','true'));
+  };
+  const collapseAll=()=>{
+    if(!reportRef.current)return;
+    reportRef.current.querySelectorAll('tbody.fo-month').forEach(tb=>tb.classList.add('fo-collapsed'));
+    reportRef.current.querySelectorAll('.fo-month-header').forEach(h=>h.setAttribute('aria-expanded','false'));
+  };
+
+  const exportHtml=async()=>{
+    setExporting(true);
+    try{
+      const res=await fetch(`/api/logistics/fo-performance/export?objective=${encodeURIComponent(objective)}`,{headers:authHeaders()});
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;
+      const stamp=new Date().toISOString().slice(0,10);
+      a.download=`FO_Performance_${stamp}.html`;
+      document.body.appendChild(a);a.click();
+      setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},100);
+      toast('Exported standalone HTML','success');
+    }catch(e){toast('Export failed: '+e.message,'error')}
+    finally{setExporting(false)}
   };
 
   const uploadedAt=meta?.uploaded_at?new Date(meta.uploaded_at).toLocaleString():null;
@@ -254,19 +335,34 @@ function LogisticsPage({isAdmin}){
         <p className="text-xs text-ineos-iron-smoke mt-1">Computed from the weekly Vehicle Distribution workbook. Daily freight order flow-through, SLA compliance, and FO pacing to objective. {meta?.uploaded?`Source: ${meta.filename||'workbook'}.`:'No Vehicle Distribution file uploaded yet.'} {uploadedAt?`Last upload: ${uploadedAt}.`:''}</p>
         {meta?.uploaded&&meta?.months!=null&&<p className="text-[11px] text-ineos-silver-dust mt-1">{meta.months} months · {meta.daily_rows} daily rows</p>}
       </div>
-      {isAdmin&&<div className="flex items-center gap-2 shrink-0">
-        <input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>
-        <label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>
-        <button onClick={loadHtml} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light">Refresh</button>
-      </div>}
+      <div className="flex items-center gap-2 shrink-0">
+        {isAdmin&&<>
+          <input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>
+          <label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>
+        </>}
+        <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light disabled:opacity-50 disabled:cursor-not-allowed">{exporting?'Exporting...':'Export HTML'}</button>
+        <button onClick={()=>loadHtml()} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light">Refresh</button>
+      </div>
     </div>
 
     {uploadResult&&uploadResult.error&&<div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-xs text-red-700">Upload error: {uploadResult.error}</div>}
 
+    {meta?.uploaded&&<div className="bg-white rounded-xl border border-ineos-dove p-4 mb-4 flex flex-wrap items-center gap-6">
+      <div className="flex items-center gap-3">
+        <label htmlFor="fo-objective" className="text-xs font-semibold uppercase tracking-wider text-ineos-iron-smoke">Monthly Wholesale Objective</label>
+        <input id="fo-objective" type="number" min="0" max="100000" value={objectiveDraft} onChange={onObjectiveChange} onBlur={onObjectiveBlur} className="w-24 border border-ineos-dove rounded px-2 py-1.5 text-sm text-right font-mono" style={{borderLeft:'3px solid #A84E1F'}}/>
+        <span className="text-[11px] text-ineos-silver-dust">Updates FO Pacing automatically</span>
+      </div>
+      <div className="flex items-center gap-2 ml-auto">
+        <button onClick={expandAll} className="text-[11px] font-semibold uppercase tracking-wider text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-2 py-1">Expand all</button>
+        <button onClick={collapseAll} className="text-[11px] font-semibold uppercase tracking-wider text-ineos-iron-smoke hover:text-ineos-red border border-ineos-dove rounded px-2 py-1">Collapse all</button>
+      </div>
+    </div>}
+
     <div className="bg-white rounded-xl border border-ineos-dove p-5">
       {loading&&<p className="text-sm text-ineos-silver-dust">Loading report…</p>}
       {error&&<p className="text-sm text-red-600">Failed to load report: {error}</p>}
-      {!loading&&!error&&<div dangerouslySetInnerHTML={{__html:html}}/>}
+      {!loading&&!error&&<div ref={reportRef} dangerouslySetInnerHTML={{__html:html}}/>}
     </div>
   </div>;
 }

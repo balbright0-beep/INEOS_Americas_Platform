@@ -365,104 +365,154 @@ def _column_definitions() -> list[list[Any]]:
     return [[key, name, desc] + [None] * 12 for key, name, desc in entries]
 
 
-def _build_summary_sections(
+def _row(label: str, value: Any = None, note: str = '') -> list[Any]:
+    cells: list[Any] = [label] + [None] * 15
+    if value is not None:
+        cells[11] = value
+    if note:
+        cells[13] = note
+    return cells
+
+
+def _compute_base_metrics(
     records: list[dict[str, Any]],
     anchor_day: date,
-    monthly_objective: int,
-) -> list[dict[str, Any]]:
-    """Build the two dynamic summary sections plus the static glossary."""
+) -> dict[str, Any]:
+    """Compute the objective-independent metrics used by the summary sections."""
     month_start = _month_start(anchor_day)
     month_end = _month_end(anchor_day)
 
-    # MTD Wholesales (pickups that have already happened this month)
     mtd_pickups = sum(
         1 for r in records if r['pickup'] and month_start <= r['pickup'] <= anchor_day
     )
-
-    # Anticipated Remaining Wholesales = the full "awaiting pickup" backlog as
-    # of the anchor day. Mirrors Col N (Cumulative Awaiting PU) at the anchor.
     anticipated_remaining = sum(
         1
         for r in records
         if r['create'] <= anchor_day and (not r['pickup'] or r['pickup'] > anchor_day)
     )
-
-    # Match the logistics team's Excel convention for the "of which" rows:
-    #   - "Current Month FOs Created" is literally the MTD Col B sum (total
-    #     Apr FOs created so far, whether or not they've been picked up).
-    #   - "Prior Month FOs Awaiting Pickup" is derived by subtraction so the
-    #     two rows always add back to the Anticipated Remaining number.
     current_month_created = sum(
         1 for r in records if month_start <= r['create'] <= anchor_day
     )
     prior_month_awaiting = max(0, anticipated_remaining - current_month_created)
-
-    # Pacing to objective
-    existing_pipeline = anticipated_remaining
     remaining_bd = _busdays_inclusive(anchor_day, month_end)
-    remaining_target = monthly_objective - mtd_pickups - existing_pipeline
+
+    return {
+        'anchor_day': anchor_day.isoformat(),
+        'month_label': anchor_day.strftime('%b %Y'),
+        'month_start': month_start.isoformat(),
+        'month_end': month_end.isoformat(),
+        'month_end_label': month_end.strftime('%b %d'),
+        'anchor_day_label': anchor_day.strftime('%b %d'),
+        'prior_month_label': (month_start - timedelta(days=1)).strftime('%b'),
+        'mtd_pickups': mtd_pickups,
+        'anticipated_remaining': anticipated_remaining,
+        'current_month_created': current_month_created,
+        'prior_month_awaiting': prior_month_awaiting,
+        'remaining_bd': remaining_bd,
+    }
+
+
+def _build_anticipated_section(base: dict[str, Any]) -> dict[str, Any]:
+    rows: list[list[Any]] = [
+        _row('MTD Wholesales (Pickups)', base['mtd_pickups'], '(Col O)'),
+        _row('Anticipated Remaining Wholesales', base['anticipated_remaining'], '(Col N)'),
+        _row(
+            'of which: Current Month FOs Created (subset of above)',
+            base['current_month_created'],
+            '(Col B month total)',
+        ),
+        _row(
+            f'of which: {base["prior_month_label"]} FOs Awaiting Pickup (subset of above)',
+            base['prior_month_awaiting'],
+            f'(of {base["anticipated_remaining"]} total)',
+        ),
+    ]
+    return {
+        'id': 'anticipated_wholesales',
+        'title': f'CURRENT MONTH ANTICIPATED WHOLESALES (AT PICKUP) — {base["month_label"]}',
+        'rows': rows,
+    }
+
+
+def _build_pacing_section(base: dict[str, Any], monthly_objective: int) -> dict[str, Any]:
+    existing_pipeline = base['anticipated_remaining']
+    remaining_bd = base['remaining_bd']
+    remaining_target = monthly_objective - base['mtd_pickups'] - existing_pipeline
     new_fos_needed = (
         round(remaining_target / remaining_bd, 1) if remaining_bd > 0 else None
     )
 
-    month_label = anchor_day.strftime('%b %Y')
-    prior_month_label = (month_start - timedelta(days=1)).strftime('%b')
+    rows: list[list[Any]] = [
+        _row('MONTHLY WHOLESALE OBJECTIVE', monthly_objective, 'Enter target'),
+        _row('Less: MTD Wholesales (pickups already completed)', base['mtd_pickups']),
+        _row(
+            f'Less: Existing Pipeline FOs Awaiting Pickup (created through {base["anchor_day_label"]})',
+            existing_pipeline,
+            f'({base["current_month_created"]} current mo + {base["prior_month_awaiting"]} prior)',
+        ),
+        _row(
+            f'Remaining Business Days ({base["anchor_day_label"]} through {base["month_end_label"]}, inclusive)',
+            remaining_bd,
+        ),
+        _row(
+            f'NEW FOs NEEDED PER DAY (through {base["month_end_label"]})',
+            new_fos_needed,
+            'per business day',
+        ),
+    ]
+    return {
+        'id': 'fo_pacing',
+        'title': f'FO PACING TO OBJECTIVE (through {base["month_end_label"]})',
+        'rows': rows,
+    }
 
-    anticipated_rows: list[list[Any]] = []
 
-    def row(label: str, value: Any = None, note: str = '') -> list[Any]:
-        cells: list[Any] = [label] + [None] * 15
-        if value is not None:
-            cells[11] = value
-        if note:
-            cells[13] = note
-        return cells
-
-    anticipated_rows.append(row('MTD Wholesales (Pickups)', mtd_pickups, '(Col O)'))
-    anticipated_rows.append(row('Anticipated Remaining Wholesales', anticipated_remaining, '(Col N)'))
-    anticipated_rows.append(row(
-        'of which: Current Month FOs Created (subset of above)',
-        current_month_created,
-        '(Col B month total)',
-    ))
-    anticipated_rows.append(row(
-        f'of which: {prior_month_label} FOs Awaiting Pickup (subset of above)',
-        prior_month_awaiting,
-        f'(of {anticipated_remaining} total)',
-    ))
-
-    pacing_rows: list[list[Any]] = []
-    pacing_rows.append(row('MONTHLY WHOLESALE OBJECTIVE', monthly_objective, 'Enter target'))
-    pacing_rows.append(row('Less: MTD Wholesales (pickups already completed)', mtd_pickups))
-    pacing_rows.append(row(
-        f'Less: Existing Pipeline FOs Awaiting Pickup (created through {anchor_day.strftime("%b %d")})',
-        existing_pipeline,
-        f'({current_month_created} current mo + {prior_month_awaiting} prior)',
-    ))
-    pacing_rows.append(row(
-        f'Remaining Business Days ({anchor_day.strftime("%b %d")} through {month_end.strftime("%b %d")}, inclusive)',
-        remaining_bd,
-    ))
-    pacing_rows.append(row(
-        f'NEW FOs NEEDED PER DAY (through {month_end.strftime("%b %d")})',
-        new_fos_needed,
-        'per business day',
-    ))
-
+def _build_summary_sections(
+    base: dict[str, Any],
+    monthly_objective: int,
+) -> list[dict[str, Any]]:
+    """Build the two dynamic summary sections plus the static glossary."""
     return [
+        _build_anticipated_section(base),
+        _build_pacing_section(base, monthly_objective),
         {
-            'title': f'CURRENT MONTH ANTICIPATED WHOLESALES (AT PICKUP) — {month_label}',
-            'rows': anticipated_rows,
-        },
-        {
-            'title': f'FO PACING TO OBJECTIVE (through {month_end.strftime("%b %d")})',
-            'rows': pacing_rows,
-        },
-        {
+            'id': 'column_definitions',
             'title': 'COLUMN DEFINITIONS',
             'rows': _column_definitions(),
         },
     ]
+
+
+def apply_monthly_objective(data: dict[str, Any], monthly_objective: int) -> dict[str, Any]:
+    """Swap the FO Pacing section in-place for a new monthly objective.
+
+    Mutates and returns ``data``. The base metrics captured during ingest are
+    used so we don't have to re-parse the workbook each time the objective
+    changes. Callers that want an immutable copy should pass a deep-copied
+    dict.
+    """
+    base = data.get('base_metrics')
+    if not base:
+        return data
+    new_pacing = _build_pacing_section(base, monthly_objective)
+    sections = data.get('sections') or []
+    replaced = False
+    for i, section in enumerate(sections):
+        if section.get('id') == 'fo_pacing':
+            sections[i] = new_pacing
+            replaced = True
+            break
+    if not replaced:
+        # Insert pacing between anticipated wholesales and column definitions
+        insert_at = len(sections)
+        for i, section in enumerate(sections):
+            if section.get('id') == 'column_definitions':
+                insert_at = i
+                break
+        sections.insert(insert_at, new_pacing)
+    data['sections'] = sections
+    data['monthly_objective'] = monthly_objective
+    return data
 
 
 def ingest_vehicle_distribution(
@@ -597,7 +647,8 @@ def ingest_vehicle_distribution(
         'mtd_pickups': None,
     }
 
-    sections = _build_summary_sections(records, anchor_day, monthly_objective)
+    base_metrics = _compute_base_metrics(records, anchor_day)
+    sections = _build_summary_sections(base_metrics, monthly_objective)
 
     columns = [{'key': k, 'label': COLUMN_LABELS[k]} for k in COLUMN_KEYS]
 
@@ -607,6 +658,7 @@ def ingest_vehicle_distribution(
         'months': months,
         'grand_total': grand_total,
         'sections': sections,
+        'base_metrics': base_metrics,
         'anchor_day': anchor_day.isoformat(),
         'monthly_objective': monthly_objective,
         'generated_at': datetime.utcnow().isoformat() + 'Z',

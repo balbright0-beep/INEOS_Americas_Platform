@@ -8,15 +8,18 @@ sheet, groups FOs by create date, computes flow-through counts, business-day
 SLA compliance, and cumulative / MTD pickup totals — reproducing the Daily
 Freight Order Activity report the logistics team publishes in Excel.
 
-This router exposes three authenticated read endpoints:
+This router exposes these authenticated read endpoints:
 
-  GET /api/logistics/fo-performance       → JSON data
-  GET /api/logistics/fo-performance/html  → rendered HTML fragment
-  GET /api/logistics/fo-performance/meta  → freshness + filename
+  GET /api/logistics/fo-performance        → JSON data (accepts ?objective=N)
+  GET /api/logistics/fo-performance/html   → rendered HTML fragment (?objective=N)
+  GET /api/logistics/fo-performance/export → downloadable standalone HTML file
+  GET /api/logistics/fo-performance/meta   → freshness + filename + objective
 
-Data is re-loaded on each request. If the processed JSON is missing (e.g. the
-cache dir was wiped but the raw xlsx survived in the DB), we transparently
-re-compute from the raw bytes and repopulate the cache.
+All GET endpoints accept an optional ``?objective=N`` query parameter. When
+provided, the FO Pacing to Objective section is recomputed on the fly and the
+new value is persisted to the ``logistics_monthly_objective`` AppState key so
+it becomes the default for subsequent callers. When omitted, the persisted
+value is used (falling back to the ingest default of 477).
 """
 
 from __future__ import annotations
@@ -27,19 +30,21 @@ import tempfile
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import CachedFile, AppState
-from app.routers.auth import get_current_user
+from app.routers.auth import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/logistics", tags=["logistics"])
 
 
 _CACHE_KEY = 'vehicle_distribution'
 _RAW_KEY = 'vehicle_distribution_raw'
+_OBJECTIVE_KEY = 'logistics_monthly_objective'
+_DEFAULT_OBJECTIVE = 477
 
 
 def _cache_dir() -> str:
@@ -50,13 +55,35 @@ def _cache_dir() -> str:
     )
 
 
+def _get_stored_objective(db: Session) -> int:
+    try:
+        state = db.query(AppState).filter(AppState.key == _OBJECTIVE_KEY).first()
+        if state and state.value:
+            return int(float(state.value))
+    except Exception as e:
+        print(f"  [logistics] stored objective read failed: {e}")
+    return _DEFAULT_OBJECTIVE
+
+
+def _set_stored_objective(db: Session, value: int) -> None:
+    try:
+        state = db.query(AppState).filter(AppState.key == _OBJECTIVE_KEY).first()
+        if state:
+            state.value = str(value)
+        else:
+            db.add(AppState(key=_OBJECTIVE_KEY, value=str(value)))
+        db.commit()
+    except Exception as e:
+        print(f"  [logistics] stored objective write failed: {e}")
+
+
 def _load_data(db: Session) -> dict[str, Any] | None:
     """Load the parsed FO Performance dict.
 
     Preference order:
-      1. cache/data/fo_performance.json on disk (fastest).
-      2. CachedFile[fo_performance] bytes (re-hydrate disk cache + return).
-      3. CachedFile[fo_performance_raw] bytes → re-parse via ingest module.
+      1. cache/data/vehicle_distribution.json on disk (fastest).
+      2. CachedFile[vehicle_distribution] bytes (re-hydrate disk cache + return).
+      3. CachedFile[vehicle_distribution_raw] bytes → re-parse via ingest module.
 
     Returns None if nothing has been uploaded yet.
     """
@@ -118,19 +145,62 @@ def _load_data(db: Session) -> dict[str, Any] | None:
     return None
 
 
-@router.get('/fo-performance')
-def get_fo_performance_json(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return the parsed FO Performance data as JSON."""
+def _resolved_data(
+    db: Session, objective: int | None, persist: bool = True
+) -> tuple[dict[str, Any] | None, int]:
+    """Load the base data and apply the requested (or stored) objective.
+
+    Returns ``(data, resolved_objective)``. If ``objective`` is provided and
+    ``persist`` is True, the new value is saved to AppState so it becomes the
+    default for subsequent callers.
+    """
+    import sys
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from data_hub.ingest.vehicle_distribution import apply_monthly_objective
+
     data = _load_data(db)
+    if data is None:
+        resolved = objective if objective is not None else _get_stored_objective(db)
+        return None, resolved
+
+    if objective is not None:
+        if persist:
+            _set_stored_objective(db, objective)
+        resolved = objective
+    else:
+        resolved = _get_stored_objective(db)
+        # If the cached JSON was persisted with a different objective (first
+        # load after ingest), align it with the stored setting.
+        if data.get('monthly_objective') != resolved:
+            pass  # always call apply_monthly_objective below
+
+    apply_monthly_objective(data, resolved)
+    return data, resolved
+
+
+@router.get('/fo-performance')
+def get_fo_performance_json(
+    objective: int | None = Query(None, ge=0, le=100000),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the parsed FO Performance data as JSON."""
+    data, _ = _resolved_data(db, objective)
     if data is None:
         raise HTTPException(404, 'FO Performance report has not been uploaded yet.')
     return data
 
 
 @router.get('/fo-performance/html', response_class=HTMLResponse)
-def get_fo_performance_html(user=Depends(get_current_user), db: Session = Depends(get_db)):
+def get_fo_performance_html(
+    objective: int | None = Query(None, ge=0, le=100000),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Return a rendered HTML fragment for the FO Performance report."""
-    data = _load_data(db)
+    data, _ = _resolved_data(db, objective)
     if data is None:
         return HTMLResponse(
             content=(
@@ -138,7 +208,7 @@ def get_fo_performance_html(user=Depends(get_current_user), db: Session = Depend
                 'font-family:-apple-system,Segoe UI,sans-serif">'
                 '<h3 style="color:#2A1F0F;margin:0 0 8px">No report uploaded</h3>'
                 '<p style="margin:0;font-size:13px">An administrator needs to '
-                'upload the FO Performance workbook in <strong>Data Upload</strong>.</p>'
+                'upload the Vehicle Distribution workbook in <strong>Data Upload</strong>.</p>'
                 '</div>'
             ),
             status_code=200,
@@ -150,6 +220,38 @@ def get_fo_performance_html(user=Depends(get_current_user), db: Session = Depend
         sys.path.insert(0, backend_dir)
     from data_hub.render.fo_performance_html import render_fo_performance
     return HTMLResponse(content=render_fo_performance(data))
+
+
+@router.get('/fo-performance/export')
+def export_fo_performance_html(
+    objective: int | None = Query(None, ge=0, le=100000),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return a standalone downloadable HTML document for offline viewing.
+
+    The returned file is a complete `<!doctype html>` document with inline
+    CSS + the collapsible-month JS, so it can be shared by email, opened
+    directly, or dropped into a shared drive without any extra assets.
+    """
+    data, resolved = _resolved_data(db, objective, persist=False)
+    if data is None:
+        raise HTTPException(404, 'FO Performance report has not been uploaded yet.')
+
+    import sys
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from data_hub.render.fo_performance_html import render_fo_performance
+
+    html_doc = render_fo_performance(data, standalone=True)
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    filename = f'FO_Performance_{stamp}.html'
+    return Response(
+        content=html_doc,
+        media_type='text/html; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get('/fo-performance/meta')
@@ -174,10 +276,31 @@ def get_fo_performance_meta(user=Depends(get_current_user), db: Session = Depend
     except Exception:
         pass
 
-    # Count months / daily rows if we have processed data (cheap — the JSON is small).
+    meta['monthly_objective'] = _get_stored_objective(db)
+
+    # Count months / daily rows and surface the base metrics so the
+    # frontend can preview the pacing without a full re-render round-trip.
     data = _load_data(db)
     if data:
         meta['months'] = len(data.get('months') or [])
         meta['daily_rows'] = sum(len(m.get('days', [])) for m in data.get('months') or [])
         meta['generated_at'] = data.get('generated_at')
+        meta['base_metrics'] = data.get('base_metrics')
     return meta
+
+
+@router.post('/fo-performance/objective')
+def set_fo_performance_objective(
+    data: dict,
+    user=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Persist a new monthly objective (admin only)."""
+    try:
+        value = int(float(data.get('objective', 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(400, 'objective must be a number')
+    if value < 0 or value > 100000:
+        raise HTTPException(400, 'objective out of range (0–100000)')
+    _set_stored_objective(db, value)
+    return {'ok': True, 'monthly_objective': value}

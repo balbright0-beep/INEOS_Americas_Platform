@@ -138,14 +138,24 @@ def _render_sections(sections: list[dict[str, Any]]) -> str:
     return '\n'.join(out)
 
 
-def render_fo_performance(data: dict[str, Any]) -> str:
-    """Return a self-contained HTML fragment rendering of the FO report."""
+def _month_slug(label: str) -> str:
+    return ''.join(ch.lower() if ch.isalnum() else '-' for ch in label)
+
+
+def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> str:
+    """Return an HTML rendering of the FO report.
+
+    When ``standalone=True`` a complete <!doctype html> document is returned,
+    suitable for download and offline viewing. Otherwise a fragment is
+    returned for embedding via dangerouslySetInnerHTML in the React page.
+    """
     title = html.escape(data.get('title') or 'Daily Freight Order Activity')
     columns = data.get('columns') or []
     months = data.get('months') or []
     grand_total = data.get('grand_total')
     sections = data.get('sections') or []
     generated = html.escape(data.get('generated_at', ''))
+    ncols = len(columns)
 
     # Header row
     header_cells = ''.join(
@@ -153,29 +163,91 @@ def render_fo_performance(data: dict[str, Any]) -> str:
         for c in columns
     )
 
-    # Month blocks
-    body_parts: list[str] = []
+    # Build one <tbody> per month so a click on the month header can toggle
+    # the daily+total rows inside that tbody only. This keeps the collapse
+    # state purely CSS-driven with a single class on the tbody.
+    tbody_parts: list[str] = []
     for m in months:
-        label = html.escape(m.get('label') or '')
-        body_parts.append(f'<tr class="fo-month-header"><td colspan="{len(columns)}">{label}</td></tr>')
+        label = m.get('label') or ''
+        slug = _month_slug(label)
+        esc_label = html.escape(label)
+        rows_html: list[str] = [
+            (
+                f'<tr class="fo-month-header" data-month="{slug}" role="button" tabindex="0" '
+                f'aria-expanded="true" aria-controls="fo-month-{slug}">'
+                f'<td colspan="{ncols}"><span class="fo-caret" aria-hidden="true">\u25be</span>{esc_label}</td></tr>'
+            )
+        ]
         for day in m.get('days', []):
-            body_parts.append(_row_html(columns, day))
+            rows_html.append(_row_html(columns, day))
         if m.get('total'):
-            body_parts.append(_row_html(columns, m['total'], row_class='fo-month-total'))
+            rows_html.append(_row_html(columns, m['total'], row_class='fo-month-total'))
+        tbody_parts.append(
+            f'<tbody class="fo-month" id="fo-month-{slug}" data-month="{slug}">'
+            + ''.join(rows_html)
+            + '</tbody>'
+        )
 
-    # Grand total
+    # Grand total lives in its own tbody so collapse never hides it
+    grand_tbody = ''
     if grand_total:
-        body_parts.append(_row_html(columns, grand_total, row_class='fo-grand-total'))
+        grand_tbody = (
+            '<tbody class="fo-grand"><tr class="fo-grand-total">'
+            + ''.join(_cell_html(c['key'], grand_total.get(c['key'])) for c in columns).replace(
+                '<td class="fo-num">', '<td class="fo-num fo-grand-cell">'
+            )
+            + '</tr></tbody>'
+        )
+        # Simpler: just render the row via _row_html and wrap
+        grand_tbody = (
+            '<tbody class="fo-grand">'
+            + _row_html(columns, grand_total, row_class='fo-grand-total')
+            + '</tbody>'
+        )
 
     table_html = (
         '<table class="fo-table"><thead><tr>'
         + header_cells
-        + '</tr></thead><tbody>'
-        + '\n'.join(body_parts)
-        + '</tbody></table>'
+        + '</tr></thead>'
+        + ''.join(tbody_parts)
+        + grand_tbody
+        + '</table>'
     )
 
     sections_html = _render_sections(sections)
+
+    # Inline click handler — works whether the HTML is injected via
+    # dangerouslySetInnerHTML or loaded directly from a file. Uses a
+    # delegated listener so new tbody elements on re-render keep working.
+    toggle_js = """
+<script>
+(function(){
+  function bind(root){
+    root.querySelectorAll('.fo-month-header').forEach(function(hdr){
+      if(hdr.dataset.foBound)return;
+      hdr.dataset.foBound='1';
+      hdr.addEventListener('click',function(){
+        var tb=hdr.closest('tbody.fo-month');
+        if(!tb)return;
+        var collapsed=tb.classList.toggle('fo-collapsed');
+        hdr.setAttribute('aria-expanded',collapsed?'false':'true');
+      });
+      hdr.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();hdr.click();}
+      });
+    });
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',function(){bind(document);});
+  else bind(document);
+  // Re-bind if React re-renders the fragment
+  var obs=new MutationObserver(function(m){m.forEach(function(r){bind(document);});});
+  if(document.body)obs.observe(document.body,{childList:true,subtree:true});
+  window.foCollapseAll=function(){document.querySelectorAll('tbody.fo-month').forEach(function(tb){tb.classList.add('fo-collapsed');});document.querySelectorAll('.fo-month-header').forEach(function(h){h.setAttribute('aria-expanded','false');});};
+  window.foExpandAll=function(){document.querySelectorAll('tbody.fo-month').forEach(function(tb){tb.classList.remove('fo-collapsed');});document.querySelectorAll('.fo-month-header').forEach(function(h){h.setAttribute('aria-expanded','true');});};
+})();
+</script>
+"""
 
     css = """
 <style>
@@ -192,15 +264,29 @@ def render_fo_performance(data: dict[str, Any]) -> str:
   .fo-table td { padding: 6px 10px; border-bottom: 1px solid #F2ECE3; vertical-align: middle; }
   .fo-table td.fo-date { font-weight: 500; color: #3C342C; white-space: nowrap; }
   .fo-table td.fo-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .fo-table tr.fo-month-header { cursor: pointer; user-select: none; }
   .fo-table tr.fo-month-header td { background: #F2ECE3; font-weight: 700; color: #A84E1F;
     padding: 8px 12px; border-top: 2px solid #D6CEC4; text-transform: uppercase;
-    font-size: 11px; letter-spacing: 0.6px; }
+    font-size: 11px; letter-spacing: 0.6px; transition: background 120ms ease; }
+  .fo-table tr.fo-month-header:hover td { background: #E8DFD0; }
+  .fo-table tr.fo-month-header:focus { outline: none; }
+  .fo-table tr.fo-month-header:focus td { box-shadow: inset 0 0 0 2px #A84E1F; }
+  .fo-table .fo-caret { display: inline-block; width: 14px; margin-right: 6px; color: #A84E1F;
+    font-size: 10px; transition: transform 160ms ease; }
+  .fo-table tbody.fo-month.fo-collapsed .fo-caret { transform: rotate(-90deg); }
+  .fo-table tbody.fo-month.fo-collapsed tr:not(.fo-month-header) { display: none; }
   .fo-table tr.fo-month-total td { background: #D6CEC4; font-weight: 700; color: #2A1F0F; }
   .fo-table tr.fo-grand-total td { background: #2A1F0F; color: #F5F1EA; font-weight: 700;
     padding: 10px; border-top: 3px double #A84E1F; }
   .fo-table td.fo-good { background: rgba(44,147,30,.10); color: #1F6913; font-weight: 600; }
   .fo-table td.fo-warn { background: rgba(234,179,8,.12); color: #8A6212; font-weight: 600; }
   .fo-table td.fo-bad  { background: rgba(200,43,43,.10); color: #A82727; font-weight: 600; }
+
+  .fo-toolbar { display: flex; gap: 8px; margin: 0 0 10px; }
+  .fo-toolbar button { background: #FFFFFF; border: 1px solid #D6CEC4; color: #6F6558;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 6px 10px; border-radius: 3px; cursor: pointer; }
+  .fo-toolbar button:hover { background: #F2ECE3; color: #A84E1F; border-color: #A84E1F; }
 
   .fo-sections { margin-top: 24px; display: flex; flex-direction: column; gap: 16px; }
   .fo-section { background: #FFFFFF; border: 1px solid #D6CEC4; border-left: 4px solid #A84E1F;
@@ -222,12 +308,36 @@ def render_fo_performance(data: dict[str, Any]) -> str:
 </style>
 """
 
-    return (
-        css
-        + '<div class="fo-report">'
+    toolbar_html = (
+        '<div class="fo-toolbar fo-standalone-only">'
+        '<button type="button" onclick="window.foExpandAll&&window.foExpandAll()">Expand all</button>'
+        '<button type="button" onclick="window.foCollapseAll&&window.foCollapseAll()">Collapse all</button>'
+        '</div>'
+    )
+
+    # When embedded in the React page, all the interactive behaviour is
+    # driven from React (click delegation + toolbar buttons), so we omit
+    # the <script> and the standalone-only toolbar from the fragment.
+    body = (
+        '<div class="fo-report">'
         + f'<h2 class="fo-title">{title}</h2>'
-        + (f'<p class="fo-generated">Parsed {generated}</p>' if generated else '')
+        + (f'<p class="fo-generated">Generated {generated}</p>' if generated else '')
+        + (toolbar_html if standalone else '')
         + table_html
         + sections_html
         + '</div>'
+    )
+
+    if not standalone:
+        return css + body
+
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f'<title>{title}</title>'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        + css
+        + toggle_js
+        + '</head><body style="margin:0;padding:24px;background:#F5F1EA">'
+        + body
+        + '</body></html>'
     )
