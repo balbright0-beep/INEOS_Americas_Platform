@@ -227,7 +227,7 @@ function LogisticsPage({isAdmin}){
     setLoading(true);setError(null);
     try{
       const o=obj!==undefined?obj:objective;
-      const res=await fetch(`/api/logistics/fo-performance/html?objective=${encodeURIComponent(o)}`,{headers:authHeaders()});
+      const res=await fetch(`/api/logistics/fo-performance/html?objective=${encodeURIComponent(o)}&_=${Date.now()}`,{headers:authHeaders(),cache:'no-store'});
       if(!res.ok)throw new Error(`HTTP ${res.status}`);
       setHtml(await res.text());
     }catch(e){setError(e.message)}

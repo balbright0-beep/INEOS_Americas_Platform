@@ -22,13 +22,11 @@ it becomes the default for subsequent callers. When omitted, the persisted
 value is used (falling back to the ingest default of 477).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import tempfile
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
@@ -77,13 +75,63 @@ def _set_stored_objective(db: Session, value: int) -> None:
         print(f"  [logistics] stored objective write failed: {e}")
 
 
-def _load_data(db: Session) -> dict[str, Any] | None:
+def _is_stale(data: dict) -> bool:
+    """Detect cached JSON that was written by a pre-base_metrics build.
+
+    These older caches can't be live-updated because apply_monthly_objective
+    needs base_metrics to rebuild the pacing section. When we see one we
+    throw it away and fall through to re-ingest from the raw xlsx.
+    """
+    return not isinstance(data, dict) or not data.get('base_metrics')
+
+
+def _reingest_from_raw(db: Session, data_dir: str, json_path: str) -> Optional[dict]:
+    """Re-parse the raw vehicle_distribution xlsx from the CachedFile table
+    and persist the fresh JSON to disk. Returns the parsed dict or None."""
+    try:
+        raw_cf = db.query(CachedFile).filter(CachedFile.key == _RAW_KEY).first()
+        if not (raw_cf and raw_cf.data):
+            return None
+
+        import sys
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        from data_hub.ingest.vehicle_distribution import ingest_vehicle_distribution
+
+        suffix = os.path.splitext(raw_cf.filename or 'vehicle_distribution.xlsx')[1] or '.xlsx'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(raw_cf.data)
+            tmp_path = tmp.name
+        try:
+            data = ingest_vehicle_distribution(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        os.makedirs(data_dir, exist_ok=True)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, default=str)
+        print(f"  [logistics] re-ingested from raw xlsx -> {json_path}")
+        return data
+    except Exception as e:
+        print(f"  [logistics] raw re-parse failed: {e}")
+        return None
+
+
+def _load_data(db: Session) -> Optional[dict]:
     """Load the parsed FO Performance dict.
 
     Preference order:
       1. cache/data/vehicle_distribution.json on disk (fastest).
       2. CachedFile[vehicle_distribution] bytes (re-hydrate disk cache + return).
-      3. CachedFile[vehicle_distribution_raw] bytes → re-parse via ingest module.
+      3. CachedFile[vehicle_distribution_raw] bytes -> re-parse via ingest module.
+
+    If either of the first two paths returns a dict missing base_metrics (a
+    stale cache written by an earlier build), that cache is discarded and we
+    re-ingest from the raw xlsx so the pacing section can be live-updated.
 
     Returns None if nothing has been uploaded yet.
     """
@@ -94,7 +142,14 @@ def _load_data(db: Session) -> dict[str, Any] | None:
     if os.path.exists(json_path):
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                disk_data = json.load(f)
+            if not _is_stale(disk_data):
+                return disk_data
+            print("  [logistics] disk cache missing base_metrics — forcing re-ingest")
+            try:
+                os.unlink(json_path)
+            except OSError:
+                pass
         except Exception as e:
             print(f"  [logistics] disk cache read failed: {e}")
 
@@ -103,51 +158,26 @@ def _load_data(db: Session) -> dict[str, Any] | None:
         cf = db.query(CachedFile).filter(CachedFile.key == _CACHE_KEY).first()
         if cf and cf.data:
             try:
-                data = json.loads(cf.data.decode('utf-8'))
-                os.makedirs(data_dir, exist_ok=True)
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f)
-                return data
+                db_data = json.loads(cf.data.decode('utf-8'))
+                if _is_stale(db_data):
+                    print("  [logistics] DB processed cache missing base_metrics — forcing re-ingest")
+                else:
+                    os.makedirs(data_dir, exist_ok=True)
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(db_data, f)
+                    return db_data
             except Exception as e:
                 print(f"  [logistics] DB processed decode failed: {e}")
     except Exception as e:
         print(f"  [logistics] DB processed query failed: {e}")
 
     # 3. Raw xlsx bytes in DB → re-parse
-    try:
-        raw_cf = db.query(CachedFile).filter(CachedFile.key == _RAW_KEY).first()
-        if raw_cf and raw_cf.data:
-            import sys
-            backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            if backend_dir not in sys.path:
-                sys.path.insert(0, backend_dir)
-            from data_hub.ingest.vehicle_distribution import ingest_vehicle_distribution
-
-            suffix = os.path.splitext(raw_cf.filename or 'vehicle_distribution.xlsx')[1] or '.xlsx'
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(raw_cf.data)
-                tmp_path = tmp.name
-            try:
-                data = ingest_vehicle_distribution(tmp_path)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-
-            os.makedirs(data_dir, exist_ok=True)
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, default=str)
-            return data
-    except Exception as e:
-        print(f"  [logistics] raw re-parse failed: {e}")
-
-    return None
+    return _reingest_from_raw(db, data_dir, json_path)
 
 
 def _resolved_data(
-    db: Session, objective: int | None, persist: bool = True
-) -> tuple[dict[str, Any] | None, int]:
+    db: Session, objective: Optional[int], persist: bool = True
+) -> Tuple[Optional[dict], int]:
     """Load the base data and apply the requested (or stored) objective.
 
     Returns ``(data, resolved_objective)``. If ``objective`` is provided and
@@ -182,7 +212,7 @@ def _resolved_data(
 
 @router.get('/fo-performance')
 def get_fo_performance_json(
-    objective: int | None = Query(None, ge=0, le=100000),
+    objective: Optional[int] = Query(None, ge=0, le=100000),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -195,7 +225,7 @@ def get_fo_performance_json(
 
 @router.get('/fo-performance/html', response_class=HTMLResponse)
 def get_fo_performance_html(
-    objective: int | None = Query(None, ge=0, le=100000),
+    objective: Optional[int] = Query(None, ge=0, le=100000),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -224,7 +254,7 @@ def get_fo_performance_html(
 
 @router.get('/fo-performance/export')
 def export_fo_performance_html(
-    objective: int | None = Query(None, ge=0, le=100000),
+    objective: Optional[int] = Query(None, ge=0, le=100000),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
