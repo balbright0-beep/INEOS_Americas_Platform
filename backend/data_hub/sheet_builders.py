@@ -1110,9 +1110,16 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
 
     # Per-dealer KPIs
     dk_data = defaultdict(lambda: {
-        'market': '', 'leads': 0, 'contacted': 0, 'td_booked': 0,
-        'td_completed': 0, 'won': 0, 'lost': 0
+        'market': '', 'leads': 0, 'contacted': 0, 'pending': 0, 'td_booked': 0,
+        'td_completed': 0, 'won': 0, 'lost': 0, 'utc': 0
     })
+
+    # Statuses that indicate the lead has NOT been contacted yet by the dealer.
+    # Everything else (Working, Qualified, Contacted, Won, Lost, Under Control,
+    # Accepted, In Progress, etc.) counts as contacted.
+    PENDING_STATUSES = {'', 'new', 'open', 'pending', 'unassigned',
+                        'not contacted', 'uncontacted', 'assigned',
+                        'not yet contacted', 'awaiting contact'}
 
     for _, lr in leads.iterrows():
         dealer = _norm_dealer(_safe_str(lr.get('retailer_name', ''))).upper()
@@ -1135,8 +1142,16 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
                     mkt = mu
             dk_data[dealer]['market'] = mkt
 
-        status = _safe_str(lr.get('retailer_status', lr.get('lead_status', ''))).lower()
-        if status in ('contacted', 'won', 'lost', 'qualified', 'under control'):
+        # Retailer status drives contact-pending. Fall back to lead_status only
+        # when retailer_status is missing — the C4C retailer status is the
+        # authoritative dealer-touch indicator.
+        r_status = _safe_str(lr.get('retailer_status', '')).strip().lower()
+        l_status = _safe_str(lr.get('lead_status', '')).strip().lower()
+        status = r_status or l_status
+        is_pending = status in PENDING_STATUSES
+        if is_pending:
+            dk_data[dealer]['pending'] += 1
+        else:
             dk_data[dealer]['contacted'] += 1
 
         td_book = _safe_date(lr.get('td_booking_date', None))
@@ -1156,8 +1171,8 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
         dealer_mb = defaultdict(lambda: {'mb30': 0, 'mb60': 0, 'mb90': 0, 'sales': 0})
 
     # Write data rows (row 4+) and accumulate network total
-    net = {k: 0 for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost',
-                           'mb30', 'mb60', 'mb90', 'mb_sales')}
+    net = {k: 0 for k in ('leads', 'contacted', 'pending', 'td_booked', 'td_completed',
+                           'won', 'lost', 'mb30', 'mb60', 'mb90', 'mb_sales')}
     region_order = ['Central', 'Southeast', 'Northeast', 'Western', 'Canada', 'Mexico']
 
     # Group dealers by region, but also include "Other" for unmapped
@@ -1175,6 +1190,7 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
         for dk, kpi in dealers:
             n = kpi['leads']
             c = kpi['contacted']
+            p = kpi['pending']  # leads NOT yet contacted
             tb = kpi['td_booked']
             tc = kpi['td_completed']
             w = kpi['won']
@@ -1187,10 +1203,15 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
             row[1] = dk.title()
             row[2] = ''
             row[3] = n
-            row[4] = c
-            row[5] = round(c / n, 3) if n > 0 else 0
-            row[6] = c
-            row[7] = round(c / n, 3) if n > 0 else 0
+            # Contact Pending: count + % of leads that haven't been touched.
+            # Processor reads these as cp / cpP. Lower = better.
+            row[4] = p
+            row[5] = round(p / n, 3) if n > 0 else 0
+            # Untouched Contacts: pending leads that were also lost (never
+            # contacted before being closed). No reliable signal from C4C
+            # so approximate as pending intersected with lost=0 → 0.
+            row[6] = 0
+            row[7] = 0
             row[8] = tb
             row[9] = tc
             row[10] = round(tc / tb, 3) if tb > 0 else 0
@@ -1203,7 +1224,7 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
             row[17] = round(mb['mb90'] / ms, 3)  # MB90%
             ws.append(row)
 
-            for k in ('leads', 'contacted', 'td_booked', 'td_completed', 'won', 'lost'):
+            for k in ('leads', 'contacted', 'pending', 'td_booked', 'td_completed', 'won', 'lost'):
                 net[k] += kpi[k]
             net['mb30'] += mb['mb30']
             net['mb60'] += mb['mb60']
@@ -1216,10 +1237,10 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
     row[0] = 'Network'
     row[1] = 'NETWORK TOTAL'
     row[3] = net['leads']
-    row[4] = net['contacted']
-    row[5] = round(net['contacted'] / net['leads'], 3) if net['leads'] > 0 else 0
-    row[6] = net['contacted']
-    row[7] = round(net['contacted'] / net['leads'], 3) if net['leads'] > 0 else 0
+    row[4] = net['pending']
+    row[5] = round(net['pending'] / net['leads'], 3) if net['leads'] > 0 else 0
+    row[6] = 0
+    row[7] = 0
     row[8] = net['td_booked']
     row[9] = net['td_completed']
     row[10] = round(net['td_completed'] / net['td_booked'], 3) if net['td_booked'] > 0 else 0
@@ -1232,6 +1253,8 @@ def build_lead_kpis_sheet(ws, leads, mkt_map, urban_science=None, dealer_mb=None
     row[17] = round(net['mb90'] / ms, 3)
     ws.append(row)
     print(f"  LK MB: {net['mb30']}/{net['mb_sales']}={round(net['mb30']/ms*100,1)}% (30D), {round(net['mb90']/ms*100,1)}% (90D)")
+    cp_pct = round(net['pending'] / net['leads'] * 100, 1) if net['leads'] else 0
+    print(f"  LK Contact Pending: {net['pending']}/{net['leads']} = {cp_pct}% (target <25%)")
 
 
 # ═══════════════════════════════════════════════════════════════════════
