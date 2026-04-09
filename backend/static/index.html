@@ -336,10 +336,8 @@ function LogisticsPage({isAdmin}){
         {meta?.uploaded&&meta?.months!=null&&<p className="text-[11px] text-ineos-silver-dust mt-1">{meta.months} months · {meta.daily_rows} daily rows</p>}
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {isAdmin&&<>
-          <input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>
-          <label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>
-        </>}
+        {isAdmin&&<input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>}
+        {isAdmin&&<label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white" style={{background:uploading?'#9F9F9F':'#A84E1F'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Vehicle Distribution':'Upload Vehicle Distribution')}</label>}
         <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light disabled:opacity-50 disabled:cursor-not-allowed">{exporting?'Exporting...':'Export HTML'}</button>
         <button onClick={()=>loadHtml()} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light">Refresh</button>
       </div>

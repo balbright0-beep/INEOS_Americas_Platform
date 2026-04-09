@@ -483,6 +483,24 @@ def _build_summary_sections(
     ]
 
 
+def _is_pacing_section(section: dict[str, Any]) -> bool:
+    if not isinstance(section, dict):
+        return False
+    if section.get('id') == 'fo_pacing':
+        return True
+    title = str(section.get('title') or '').upper()
+    return title.startswith('FO PACING')
+
+
+def _is_glossary_section(section: dict[str, Any]) -> bool:
+    if not isinstance(section, dict):
+        return False
+    if section.get('id') == 'column_definitions':
+        return True
+    title = str(section.get('title') or '').upper()
+    return 'COLUMN DEFINITIONS' in title
+
+
 def apply_monthly_objective(data: dict[str, Any], monthly_objective: int) -> dict[str, Any]:
     """Swap the FO Pacing section in-place for a new monthly objective.
 
@@ -490,27 +508,43 @@ def apply_monthly_objective(data: dict[str, Any], monthly_objective: int) -> dic
     used so we don't have to re-parse the workbook each time the objective
     changes. Callers that want an immutable copy should pass a deep-copied
     dict.
+
+    Matching is intentionally tolerant: we first look for a section with
+    id='fo_pacing', then fall back to any section whose title starts with
+    "FO PACING". This handles cached JSON written by earlier builds that
+    didn't include the id field. Any additional pacing sections (e.g. from
+    previous bugged rebuilds that inserted a duplicate) are removed so we
+    always end up with exactly one.
     """
     base = data.get('base_metrics')
     if not base:
+        # Nothing we can recompute — leave data alone.
         return data
+
     new_pacing = _build_pacing_section(base, monthly_objective)
-    sections = data.get('sections') or []
-    replaced = False
-    for i, section in enumerate(sections):
-        if section.get('id') == 'fo_pacing':
-            sections[i] = new_pacing
-            replaced = True
-            break
-    if not replaced:
-        # Insert pacing between anticipated wholesales and column definitions
-        insert_at = len(sections)
-        for i, section in enumerate(sections):
-            if section.get('id') == 'column_definitions':
+    sections = list(data.get('sections') or [])
+
+    # Drop every existing pacing section (handles stale duplicates) and
+    # remember where the first one lived so we can re-insert there.
+    insert_at: int | None = None
+    kept: list[dict[str, Any]] = []
+    for section in sections:
+        if _is_pacing_section(section):
+            if insert_at is None:
+                insert_at = len(kept)
+            continue
+        kept.append(section)
+
+    if insert_at is None:
+        # No pacing section existed — put it right before the glossary.
+        insert_at = len(kept)
+        for i, section in enumerate(kept):
+            if _is_glossary_section(section):
                 insert_at = i
                 break
-        sections.insert(insert_at, new_pacing)
-    data['sections'] = sections
+
+    kept.insert(insert_at, new_pacing)
+    data['sections'] = kept
     data['monthly_objective'] = monthly_objective
     return data
 
