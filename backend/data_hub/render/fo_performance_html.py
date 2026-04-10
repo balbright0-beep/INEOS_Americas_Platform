@@ -278,11 +278,18 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
   }
 
   .fo-report .fo-table-wrap {
+    /* The wrap is the scroll container for BOTH axes. This:
+       1. Contains the 15-column table horizontally so it never pushes
+          past the card / page width.
+       2. Creates a proper sticky-containing block so the thead actually
+          pins while scrolling — the outer .ids-main has overflow-y:
+          auto but no height constraint, so sticky fails there. */
+    max-height: calc(100vh - 260px);
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid #E3E1DC; border-radius: 6px;
     background: #FFFFFF;
-    /* no overflow-x by default — that would create a y-axis scroll
-       context and break the sticky thead on page scroll. A media query
-       further down restores horizontal scrolling on narrow screens. */
+    overscroll-behavior: contain;
   }
   .fo-table {
     width: 100%; border-collapse: separate; border-spacing: 0;
@@ -291,10 +298,9 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
   }
   .fo-table thead tr { background: #FFFFFF; }
   .fo-table th.fo-th {
-    /* Sticky column headers — pinned to the top of the nearest scroll
-       container (.ids-main) so they stay visible while scrolling the
-       daily rows underneath. Needs an opaque background to cover the
-       rows sliding beneath. */
+    /* Sticky column headers — pin to the top of .fo-table-wrap as the
+       user scrolls the daily rows. Opaque background prevents rows
+       from bleeding through. */
     position: sticky; top: 0; z-index: 10;
     text-align: left; padding: 11px 12px; font-size: 10px;
     font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
@@ -452,17 +458,10 @@ def render_fo_performance(data: dict[str, Any], *, standalone: bool = False) -> 
 
   @media (max-width: 900px) {
     .fo-sections { grid-template-columns: 1fr; }
-  }
-
-  /* On narrow viewports the 15-column table won't fit, so we restore
-     horizontal scrolling. This creates a y-axis scroll context too, so
-     sticky thead stops working below this breakpoint — acceptable
-     because mobile users mostly interact with the summary sections. */
-  @media (max-width: 1280px) {
-    .fo-report .fo-table-wrap {
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-    }
+    /* On phones the 100vh-260px budget gets tight once the URL bar,
+       chrome, and the page header eat into the viewport, so fall back
+       to a fixed pixel cap that always shows ~10 rows. */
+    .fo-report .fo-table-wrap { max-height: 520px; }
   }
 </style>
 """
