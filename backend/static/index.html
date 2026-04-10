@@ -218,6 +218,7 @@ function LogisticsPage({isAdmin}){
   const[objective,setObjective]=useState(477);
   const[objectiveDraft,setObjectiveDraft]=useState('477');
   const[exporting,setExporting]=useState(false);
+  const[emailing,setEmailing]=useState(false);
   const reportRef=useRef(null);
   const debounceRef=useRef(null);
 
@@ -308,22 +309,34 @@ function LogisticsPage({isAdmin}){
     reportRef.current.querySelectorAll('.fo-month-header').forEach(h=>h.setAttribute('aria-expanded','false'));
   };
 
+  const downloadBlob=async(endpoint,filenamePrefix,successMsg)=>{
+    const res=await fetch(`${endpoint}?objective=${encodeURIComponent(objective)}`,{headers:authHeaders()});
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    const stamp=new Date().toISOString().slice(0,10);
+    a.download=`${filenamePrefix}_${stamp}.html`;
+    document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},100);
+    toast(successMsg,'success');
+  };
+
   const exportHtml=async()=>{
     setExporting(true);
     try{
-      const res=await fetch(`/api/logistics/fo-performance/export?objective=${encodeURIComponent(objective)}`,{headers:authHeaders()});
-      if(!res.ok)throw new Error(`HTTP ${res.status}`);
-      const blob=await res.blob();
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement('a');
-      a.href=url;
-      const stamp=new Date().toISOString().slice(0,10);
-      a.download=`FO_Performance_${stamp}.html`;
-      document.body.appendChild(a);a.click();
-      setTimeout(()=>{URL.revokeObjectURL(url);a.remove()},100);
-      toast('Exported standalone HTML','success');
+      await downloadBlob('/api/logistics/fo-performance/export','FO_Performance','Exported full standalone HTML');
     }catch(e){toast('Export failed: '+e.message,'error')}
     finally{setExporting(false)}
+  };
+
+  const exportEmail=async()=>{
+    setEmailing(true);
+    try{
+      await downloadBlob('/api/logistics/fo-performance/export-email','FO_Performance_Email','Exported email-ready HTML (current + prior month)');
+    }catch(e){toast('Email export failed: '+e.message,'error')}
+    finally{setEmailing(false)}
   };
 
   const uploadedAt=meta?.uploaded_at?new Date(meta.uploaded_at).toLocaleString():null;
@@ -338,7 +351,8 @@ function LogisticsPage({isAdmin}){
       <div className="flex items-center gap-2 shrink-0">
         {isAdmin&&<input type="file" id="vd-upload" accept=".xlsx" style={{display:'none'}} onChange={e=>{if(e.target.files[0])upload(e.target.files[0]);e.target.value=''}}/>}
         {isAdmin&&<label htmlFor="vd-upload" className="inline-flex items-center gap-1 px-4 py-2 rounded text-sm font-medium cursor-pointer text-white bg-ineos-red hover:opacity-90 transition-opacity" style={{background:uploading?'var(--ids-silver-dust)':'var(--ids-accent)'}}>{uploading?'Uploading...':(meta?.uploaded?'Replace Report':'Upload Report')}</label>}
-        <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{exporting?'Exporting...':'Export HTML'}</button>
+        <button onClick={exportEmail} disabled={emailing||!meta?.uploaded} title="Email-safe HTML — current + prior month only, inline styles, pastes into Outlook/Gmail" className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{emailing?'Preparing...':'Email HTML'}</button>
+        <button onClick={exportHtml} disabled={exporting||!meta?.uploaded} title="Full standalone report with every month, collapsible sections, and the complete daily table" className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{exporting?'Exporting...':'Full HTML'}</button>
         <button onClick={()=>loadHtml()} className="px-3 py-2 rounded text-sm font-medium border border-ineos-dove text-ineos-iron-smoke hover:bg-ineos-mushroom-light hover:text-ineos-charcoal transition-colors">Refresh</button>
       </div>
     </div>

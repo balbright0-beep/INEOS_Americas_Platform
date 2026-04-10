@@ -286,6 +286,40 @@ def export_fo_performance_html(
     )
 
 
+@router.get('/fo-performance/export-email')
+def export_fo_performance_email(
+    objective: Optional[int] = Query(None, ge=0, le=100000),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return an email-safe HTML document scoped to current + prior month.
+
+    Rendered with inline styles, table-based layout, and no JavaScript or
+    external stylesheets so it pastes cleanly into Outlook / Gmail / Apple
+    Mail. Includes a 4-KPI summary strip, daily rows for the current and
+    prior month only, the Anticipated Wholesales and FO Pacing sections,
+    and the column-definitions glossary.
+    """
+    data, resolved = _resolved_data(db, objective, persist=False)
+    if data is None:
+        raise HTTPException(404, 'FO Performance report has not been uploaded yet.')
+
+    import sys
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from data_hub.render.fo_performance_html import render_fo_performance_email
+
+    html_doc = render_fo_performance_email(data)
+    stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    filename = f'FO_Performance_Email_{stamp}.html'
+    return Response(
+        content=html_doc,
+        media_type='text/html; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get('/fo-performance/meta')
 def get_fo_performance_meta(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Return freshness metadata for the FO Performance report."""
