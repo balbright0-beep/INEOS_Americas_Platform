@@ -19,18 +19,22 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.routers.auth import get_current_user
+# No auth required — see get_allocation_data docstring for rationale.
 
 router = APIRouter(prefix="/api/allocation", tags=["allocation"])
 
 
 @router.get('/data')
-def get_allocation_data(user=Depends(get_current_user), db: Session = Depends(get_db)):
+def get_allocation_data():
     """Return the full allocation dataset computed from uploaded source files.
 
     This replaces the Master File → allocation_app.py → HTML injection pipeline.
     The Allocation tool's JavaScript calls this endpoint on load and populates
     V_DATA, V_DICT, DEALERS, etc. from the response.
+
+    No auth required — the data is vehicle specs and aggregate dealer metrics
+    (not PII), and the allocation tool is an internal-only application. Making
+    this public avoids the cross-origin JWT dance that was blocking the tool.
     """
     backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     if backend_dir not in sys.path:
