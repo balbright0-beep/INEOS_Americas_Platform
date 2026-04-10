@@ -24,6 +24,14 @@ from typing import Any
 import pandas as pd
 
 
+def _s(row: Any, key: str) -> str:
+    """Safely extract a string value from a pandas Series row."""
+    val = row.get(key)
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ''
+    return str(val).strip()
+
+
 def _clean(name: str) -> str:
     n = str(name).strip().upper()
     for suffix in [" INEOS GRENADIER", " INEOS", " GRENADIER"]:
@@ -199,7 +207,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
 
         material = str(r.get('material', '')).strip()
         customer = str(r.get('customer_name', '')).strip()
-        channel = str(r.get('channel', '')).strip()
+        channel = str(r.get('channel', '')).strip().upper()
         status = str(r.get('status', '')).strip()
         dealer = _clean(customer)
         market = _lookup_mkt(mkt_map, dealer)
@@ -236,36 +244,46 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
             'body': _parse_body(material),
             'my': _parse_my(material),
             'status_label': _classify_status(status),
-            'trim': str(r.get('trim', '')).strip(),
-            'pack': str(r.get('rough_pack', '')).strip(),
-            'color': str(r.get('ext_color', '')).strip(),
-            'seats': str(r.get('seats', '')).strip(),
-            'roof': str(r.get('roof_color', '')).strip(),
-            'safari': str(r.get('safari_windows', '')).strip(),
-            'wheels': str(r.get('wheels', '')).strip(),
-            'tyres': str(r.get('tyres', '')).strip(),
-            'frame': str(r.get('frame_color', '')).strip(),
-            'tow': str(r.get('tow_bar') if pd.notna(r.get('tow_bar')) else r.get('tow', '')).strip() if pd.notna(r.get('tow_bar', r.get('tow', ''))) else '',
-            'heated_seats': str(r.get('heated_seats', '')).strip(),
-            'diff_locks': str(r.get('diff_locks', '')).strip(),
-            'ladder': str(r.get('ladder') if pd.notna(r.get('ladder')) else r.get('access_ladder', '')).strip() if pd.notna(r.get('ladder', r.get('access_ladder', ''))) else '',
-            'plant': str(r.get('plant_code', '')).strip(),
+            'trim': _s(r, 'trim'),
+            'pack': _s(r, 'rough_pack'),
+            'color': _s(r, 'ext_color'),
+            'seats': _s(r, 'seats'),
+            'roof': _s(r, 'roof_color'),
+            'safari': _s(r, 'safari_windows'),
+            'wheels': _s(r, 'wheels'),
+            'tyres': _s(r, 'tyres'),
+            'frame': _s(r, 'frame_color'),
+            'tow': _s(r, 'tow_ball'),
+            'heated_seats': _s(r, 'seat_heating'),
+            'diff_locks': _s(r, 'diff_locks_rf'),
+            'ladder': _s(r, 'access_ladder'),
+            'plant': _s(r, 'plant_code'),
             'msrp': int(float(r.get('msrp', 0) or 0)),
-            'so_no': str(r.get('order_no', r.get('so_no', ''))).strip(),
+            'so_no': _s(r, 'order_no'),
             'ho_date': ho_date,
             'dis': dis,
-            'eta': str(r.get('eta', '')).strip() if pd.notna(r.get('eta')) else '',
-            'vessel': str(r.get('vessel', '')).strip() if pd.notna(r.get('vessel')) else '',
-            # Extra option fields
-            'sound': str(r.get('sound', '')).strip() if pd.notna(r.get('sound')) else '',
-            'privacy_glass': str(r.get('privacy_glass', '')).strip() if pd.notna(r.get('privacy_glass')) else '',
-            'air_intake': str(r.get('air_intake', '')).strip() if pd.notna(r.get('air_intake')) else '',
-            'winch': str(r.get('winch', '')).strip() if pd.notna(r.get('winch')) else '',
-            'aux_battery': '', 'aux_switch': '', 'carpet': '', 'compass': '',
-            'centre_diff': '', 'emerg_safety': '', 'floor_trim': '',
-            'utility_rails': '', 'smokers': '', 'spare_wheel': '',
-            'front_tow': '', 'bump_strips': '', 'steering': '', 'wheel_locks': '',
-            'stock_cat': str(r.get('stock_category', '')).strip() if pd.notna(r.get('stock_category')) else '',
+            'eta': _s(r, 'eta'),
+            'vessel': _s(r, 'vessel'),
+            # Extra option fields — mapped from SAP parquet column names
+            'sound': _s(r, 'speaker_system'),
+            'privacy_glass': _s(r, 'privacy_glass'),
+            'air_intake': _s(r, 'raised_air_intake'),
+            'winch': _s(r, 'front_winch'),
+            'aux_battery': _s(r, 'aux_battery'),
+            'aux_switch': _s(r, 'aux_switchbar'),
+            'carpet': _s(r, 'carpet_mats'),
+            'compass': _s(r, 'compass'),
+            'centre_diff': _s(r, 'diff_lock_central'),
+            'emerg_safety': _s(r, 'safety_package'),
+            'floor_trim': _s(r, 'floor_trim'),
+            'utility_rails': _s(r, 'utility_rails'),
+            'smokers': _s(r, 'smokers_pack'),
+            'spare_wheel': _s(r, 'spare_wheel_container'),
+            'front_tow': _s(r, 'tow_plate_front'),
+            'bump_strips': _s(r, 'rubber_bump_strips'),
+            'steering': _s(r, 'steering_wheel'),
+            'wheel_locks': _s(r, 'wheel_locks'),
+            'stock_cat': _s(r, 'stock_category'),
         })
 
     print(f"  [allocation] {len(rows)} vehicles from SAP parquet (North America)")
@@ -328,6 +346,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
 
     # --- DEALERS ---
     us_rows = [r for r in rows if "UNITED STATES" in r["country"].upper() and r["channel"] in RETAIL_CHANNELS]
+    print(f"  [allocation] US retail rows: {len(us_rows)} (of {len(rows)} total)")
 
     dealer_og: dict[str, int] = defaultdict(int)
     dealer_cum: dict[str, dict[int, int]] = defaultdict(lambda: {bp: 0 for bp in BREAKPOINTS})
@@ -335,10 +354,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
 
     for r in us_rows:
         dealer = r["dealer"]
-        mkt = _lookup_mkt(mkt_map, dealer)
-        if mkt not in US_MARKETS:
-            continue
-        if "IN_US_STK" in dealer or "INEOS US STOCK" in dealer:
+        if "IN_US_STK" in dealer or "INEOS US STOCK" in dealer or "INEOS AUTOMOTIVE" in dealer:
             continue
 
         status = r["status"].lower()
@@ -361,11 +377,13 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
     dealers = []
     for d in sorted(all_dealers):
         mkt = _lookup_mkt(mkt_map, d)
-        if mkt not in US_MARKETS:
-            continue
+        # Include all dealers with a US market OR unknown market (don't drop
+        # dealers just because the market map is incomplete on Render)
+        if mkt and mkt not in US_MARKETS:
+            continue  # skip explicitly non-US (e.g. Canada, Mexico)
         dealers.append({
             "name": d,
-            "market": mkt,
+            "market": mkt or "Other",
             "og": dealer_og.get(d, 0),
             "cum": dealer_cum.get(d, {bp: 0 for bp in BREAKPOINTS}),
             "ytd_ho": dealer_ytd.get(d, 0),
@@ -380,7 +398,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
         if not plant or "IN_US_STK" in dealer or "INEOS US STOCK" in dealer:
             continue
         mkt = _lookup_mkt(mkt_map, dealer)
-        if mkt not in US_MARKETS:
+        if mkt and mkt not in US_MARKETS:
             continue
         plant_dealer[plant][dealer] += 1
 
@@ -399,7 +417,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
         if "IN_US_STK" in dealer or "INEOS US STOCK" in dealer:
             continue
         mkt = _lookup_mkt(mkt_map, dealer)
-        if mkt not in US_MARKETS:
+        if mkt and mkt not in US_MARKETS:
             continue
         bt = f'{r["body"]}|{r["trim"]}'
         btc = f'{bt}|{r["color"]}'
@@ -416,7 +434,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
         if "IN_US_STK" in dealer or "INEOS US STOCK" in dealer:
             continue
         mkt = _lookup_mkt(mkt_map, dealer)
-        if mkt not in US_MARKETS:
+        if mkt and mkt not in US_MARKETS:
             continue
         status = r["status"].lower()
         cfg = f'{r["body"]}|{r["trim"]}'
@@ -456,7 +474,7 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
         if "IN_US_STK" in dealer or "INEOS US STOCK" in dealer:
             continue
         mkt = _lookup_mkt(mkt_map, dealer)
-        if mkt not in US_MARKETS:
+        if mkt and mkt not in US_MARKETS:
             continue
         cfg = f'{r["body"]}|{r["trim"]}'
         dts_dealer[dealer][cfg].append(dis)
