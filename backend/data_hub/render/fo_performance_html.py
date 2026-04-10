@@ -530,6 +530,10 @@ EMAIL_COLUMNS = [
 
 
 _EMAIL_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,sans-serif"
+# Width budget for the email layout. 900px is generous enough to fit a
+# few flow-through columns (Avg BD, MTD) alongside the core 7 while still
+# fitting comfortably in Outlook/Gmail at desktop width.
+EMAIL_WIDTH = 900
 _EMAIL_MONO_FONT = "'SF Mono',Menlo,Consolas,monospace"
 _EMAIL_BG = "#FAFAF9"
 _EMAIL_CARD_BG = "#FFFFFF"
@@ -980,9 +984,9 @@ def render_fo_performance_email(data: dict[str, Any]) -> str:
         '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" '
         f'border="0" bgcolor="{_EMAIL_BG}" style="background:{_EMAIL_BG};">'
         '<tr><td align="center" style="padding:24px 12px;">'
-        '<table role="presentation" width="640" cellspacing="0" cellpadding="0" '
+        '<table role="presentation" width="900" cellspacing="0" cellpadding="0" '
         f'border="0" bgcolor="{_EMAIL_CARD_BG}" '
-        f'style="width:640px;max-width:640px;background:{_EMAIL_CARD_BG};'
+        f'style="width:900px;max-width:900px;background:{_EMAIL_CARD_BG};'
         f'border:1px solid {_EMAIL_BORDER};border-radius:8px;overflow:hidden;">'
         f'<tr><td style="padding:0;">{inner}</td></tr>'
         '</table></td></tr></table>'
