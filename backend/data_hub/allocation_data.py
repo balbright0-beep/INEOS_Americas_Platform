@@ -168,7 +168,9 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
     if sap is None:
         raise RuntimeError("SAP Vehicle Export not uploaded yet.")
 
-    handover = load('sap_handover') or load('handover')
+    handover = load('sap_handover')
+    if handover is None:
+        handover = load('handover')
     sales_order = load('sales_order')
 
     mkt_map = _build_mkt_map(sap)
@@ -243,10 +245,10 @@ def compute_allocation_data(cache_dir: str) -> dict[str, Any]:
             'wheels': str(r.get('wheels', '')).strip(),
             'tyres': str(r.get('tyres', '')).strip(),
             'frame': str(r.get('frame_color', '')).strip(),
-            'tow': str(r.get('tow_bar', r.get('tow', ''))).strip() if r.get('tow_bar', r.get('tow')) else '',
+            'tow': str(r.get('tow_bar') if pd.notna(r.get('tow_bar')) else r.get('tow', '')).strip() if pd.notna(r.get('tow_bar', r.get('tow', ''))) else '',
             'heated_seats': str(r.get('heated_seats', '')).strip(),
             'diff_locks': str(r.get('diff_locks', '')).strip(),
-            'ladder': str(r.get('ladder', r.get('access_ladder', ''))).strip() if r.get('ladder', r.get('access_ladder')) else '',
+            'ladder': str(r.get('ladder') if pd.notna(r.get('ladder')) else r.get('access_ladder', '')).strip() if pd.notna(r.get('ladder', r.get('access_ladder', ''))) else '',
             'plant': str(r.get('plant_code', '')).strip(),
             'msrp': int(float(r.get('msrp', 0) or 0)),
             'so_no': str(r.get('order_no', r.get('so_no', ''))).strip(),
